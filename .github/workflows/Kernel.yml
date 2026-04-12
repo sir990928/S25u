@@ -1,4 +1,4 @@
-name: 全新纯净内核编译_极致减负版
+name: 全新纯净内核编译_极速不卡版
 on:
   push:
     branches: [ main ]
@@ -11,59 +11,60 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 内核编译加长超时防卡死
+    timeout-minutes: 360
     steps:
       - name: Checkout 仓库代码
         uses: actions/checkout@v4
 
-      # 0. 极致空间清理
-      - name: 极致空间清理
+      # 0. 骨灰级清理：腾出 30GB+ 空间，这是新号/老号保命的关键
+      - name: 极致释放磁盘空间
         run: |
-          echo "🧹 正在清理虚拟机，腾出 20GB+ 空间..."
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          echo "🧹 暴力拆迁虚拟机冗余组件..."
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift /usr/local/.ghcup /usr/lib/jvm || true
           sudo docker image prune --all --force
+          sudo apt-get clean
+          df -h
 
-      # 安装依赖
-      - name: 安装必备依赖
+      - name: 安装必备编译依赖
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
 
-      # 下载工具链
+      # 1. 下载工具链 (灶台)
       - name: 下载编译工具链
         run: wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
 
-      # 解压+清.git+赋权
-      - name: 准备编译环境
+      # 2. 解压并进行“瞒天过海”处理
+      - name: 解压工具链 & 权限预处理
         run: |
           echo "📦 正在解压工具链..."
           unzip -o -q kernel_platform.zip -d .
-          sudo rm -f kernel_platform.zip
+          rm -f kernel_platform.zip
           
-          echo "🔥 删除所有.git目录规避校验"
+          echo "🔥 关键修正：瞒天过海，保留 Git 壳子..."
+          # 物理删除所有子目录的 .git 以腾空间
           find . -name ".git" -type d -exec rm -rf {} + || true
+          
+          # 在当前根目录重新初始化一个“干净”的 Git 壳子，防止脚本报错
+          git config --global user.email "bot@example.com"
+          git config --global user.name "KernelBot"
+          git config --global --add safe.directory $GITHUB_WORKSPACE
+          git init
+          git add .
+          git commit -m "initial commit for build" || true
           
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
+          df -h
 
-      # Git初始化（解决pathspec安全目录问题）
-      - name: Git初始化配置
-        run: |
-          git init
-          git config --global user.name "feng"
-          git config --global user.email "feng@example.com"
-          git config --global safe.directory '*'
-          git add .
-          git commit -m "init workspace" --no-gpg-sign || true
-
-      # 注入SukiSU
-      - name: 嵌入 SukiSU 模块
+      # 3. 顺序核心：先注入 SukiSU
+      - name: 在线注入 SukiSU
         run: |
           cd kernel_platform/common
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
 
-      # 修改defconfig精简去调试
-      - name: 修改 Defconfig 配置
+      # 4. 修改 Defconfig 配置
+      - name: 修改 Defconfig 精简去调试配置
         run: |
           ./kernel_platform/common/scripts/config --file ./kernel_platform/common/arch/arm64/configs/gki_defconfig \
           --set-str LOCALVERSION "-S25" -e KPM \
@@ -72,45 +73,43 @@ jobs:
           -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED \
           -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES
 
-      # 提交配置变更
-      - name: 固化配置修改
-        run: |
-          git add .
-          git commit -m "su inject & defconfig tweak" --no-gpg-sign || true
-
-      # 正式编译内核
+      # 5. 执行暴力编译 (带上环境变量绕过部分检查)
       - name: 执行内核编译
         run: |
           cd $GITHUB_WORKSPACE
+          # 有些编译脚本看到这个会跳过耗时的 Git 清理操作
+          export SKIP_GIT_CLEAN=1
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      # 打包AnyKernel3成品
-      - name: 提取产物并打包AnyKernel3
+      # 6. 打捞产物
+      - name: 克隆AnyKernel3 + 打捞产物打包
         run: |
           cd $GITHUB_WORKSPACE
           rm -rf AK3
+          # AnyKernel3 单独拉取，不混入源码
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
           
-          echo "🔍 全域打捞镜像..."
-          IMAGE_PATH=$(find . -name "Image" -not -path "./AK3/*" -not -path "./.git/*" -type f | head -n 1)
-          DTBO_PATH=$(find . -name "dtbo.img" -not -path "./AK3/*" -not -path "./.git/*" -type f | head -n 1)
+          echo "🔍 正在全域搜索 Image..."
+          IMAGE_PATH=$(find . -name "Image" -not -path "./AK3/*" -type f | head -n 1)
+          DTBO_PATH=$(find . -name "dtbo.img" -not -path "./AK3/*" -type f | head -n 1)
           
           if [ -z "$IMAGE_PATH" ]; then
-            echo "❌ 未找到Image内核镜像，编译失败"
+            echo "❌ 未找到内核Image，可能是编译失败或空间被撑爆了"
+            df -h
             exit 1
           fi
           
           cp -f "$IMAGE_PATH" AK3/
           [ -n "$DTBO_PATH" ] && cp -f "$DTBO_PATH" AK3/dtbo.img
           
+          # 提取内核模块
           mkdir -p AK3/modules
           find . -name "*.ko" -not -path "./AK3/*" -exec cp {} AK3/modules/ \;
           
           cd AK3
           zip -r "../S25_Final_Kernel_$(date +%m%d%H%M).zip" . -x ".git/*"
 
-      # 上传制品（关键：删掉后面非法run，纯uses配置）
-      - name: 上传成品内核包
+      - name: 上传最终内核卡刷包
         uses: actions/upload-artifact@v4
         with:
           name: S25_Final_Kernel
