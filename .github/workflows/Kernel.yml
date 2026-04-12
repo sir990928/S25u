@@ -1,4 +1,4 @@
-name: S25_Ultra_内核编译_极致注入版
+name: S25_Ultra_内核编译_极致禁用Knox完整版
 on:
   push:
     branches: [ main ]
@@ -23,10 +23,10 @@ jobs:
           aria2c -x 16 -s 16 -k 1M -o kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
 
       # 2. 合并解压
-      - name: 根目录自动合并解压
+      - name: 根目录自动解压
         run: |
           unzip -o -q kernel_platform.zip -d .
-          sudo rm -f kernel_platform.zip
+          rm -f kernel_platform.zip
 
       # 3. 注入 SukiSU
       - name: 在线注入 SukiSU
@@ -34,40 +34,64 @@ jobs:
           cd kernel_platform/common
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
 
-      # 4. 【核心修复】通过 build.config 动态注入配置 (解决 scripts/config 路径问题)
-      - name: 修改 build.config 注入参数
+      # 4. Common 核心 build.config 注入【优化完整版查杀参数】
+      - name: Common侧GKI后置配置注入(完整禁用安全)
         run: |
-          echo "⚙️ 正在通过 build.config 钩子注入配置..."
-          BC_FILE="kernel_platform/common/build.config.gki"
-          
-          # 注入环境变量，封住校验报错的嘴
-          echo "export SKIP_DEFCONFIG_VALIDATION=true" >> $BC_FILE
-          echo "export SKIP_GIT_CLEAN=1" >> $BC_FILE
-          
-          # 定义钩子函数
-          echo "POST_DEFCONFIG_CMDS=\"set_configs\"" >> $BC_FILE
-          echo "function set_configs() {" >> $BC_FILE
-          echo "  echo '🛠️ 执行动态配置注入...'" >> $BC_FILE
-          
-          # 使用 ${S_COMMON_OUT_DIR} 绝对路径定位脚本，防止 Exit 127 错误
-          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config --set-str LOCALVERSION \"-S25\"" >> $BC_FILE
-          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config -e KPM" >> $BC_FILE
-          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM" >> $BC_FILE
-          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SELINUX" >> $BC_FILE
-          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED" >> $BC_FILE
-          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES" >> $BC_FILE
-          
-          echo "  echo '🔄 重新同步配置结构...'" >> $BC_FILE
-          echo "  make -C \${S_COMMON_OUT_DIR} O=\${OUT_DIR} \${TOOL_ARGS} olddefconfig" >> $BC_FILE
-          echo "}" >> $BC_FILE
+          echo "⚙️ 写入Common全局内核禁用配置..."
+          BC_COMMON="kernel_platform/common/build.config.gki"
+          echo "export SKIP_DEFCONFIG_VALIDATION=true" >> $BC_COMMON
+          echo "export SKIP_GIT_CLEAN=1" >> $BC_COMMON
+          echo "POST_DEFCONFIG_CMDS=\"set_common_config\"" >> $BC_COMMON
+          echo "function set_common_config() {" >> $BC_COMMON
+          echo "  echo '[Common] 执行完整安全关闭注入'" >> $BC_COMMON
+          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config --set-str LOCALVERSION \"-S25-DisableKnox\" \\" >> $BC_COMMON
+          echo "  -e KPM \\" >> $BC_COMMON
+          echo "  -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM \\" >> $BC_COMMON
+          echo "  -d CONFIG_SEC_KNOX -d CONFIG_SEC_RKP -d CONFIG_SEC_HARDENING -d CONFIG_SEC_BOOT_SECURITY \\" >> $BC_COMMON
+          echo "  -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SELINUX \\" >> $BC_COMMON
+          echo "  -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED \\" >> $BC_COMMON
+          echo "  -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES \\" >> $BC_COMMON
+          echo "  -d MODULE_SIG -d MODULE_SIG_FORCE -d LOCKDOWN_SECURITY" >> $BC_COMMON
+          echo "  make -C \${S_COMMON_OUT_DIR} O=\${OUT_DIR} \${TOOL_ARGS} olddefconfig" >> $BC_COMMON
+          echo "}" >> $BC_COMMON
 
-      # 5. 暴力赋权
-      - name: 暴力赋权
+      # 5. MSM厂商侧 专属Knox/RKP封禁Hook(关键生效区)
+      - name: MSM厂商内核禁用三星原生安全栈
+        run: |
+          echo "⚙️ 写入MSM侧Knox彻底封禁..."
+          BC_MSM="kernel_platform/msm-kernel/build.config"
+          echo "export SKIP_DEFCONFIG_VALIDATION=true" >> $BC_MSM
+          echo "export SKIP_GIT_CLEAN=1" >> $BC_MSM
+          echo "POST_DEFCONFIG_CMDS=\"set_msm_knox_off\"" >> $BC_MSM
+          echo "function set_msm_knox_off() {" >> $BC_MSM
+          echo "  echo '[MSM] 关闭三星硬件安全'" >> $BC_MSM
+          echo "  \${OUT_DIR}/scripts/config --file \${OUT_DIR}/.config \\" >> $BC_MSM
+          echo "  -d SEC_KNOX -d SEC_KNOX_SUPPORT -d SEC_RKP -d SEC_HARDENING \\" >> $BC_MSM
+          echo "  -d SEC_BOOT_SECURITY -d SEC_ANTIROLLBACK -d SEC_VBMETA_CHECK \\" >> $BC_MSM
+          echo "  -d KNOX_MDM -d QCOM_SECURE_BOOT -d MODULE_SIG" >> $BC_MSM
+          echo "  make -C \${KERNEL_DIR} O=\${OUT_DIR} olddefconfig" >> $BC_MSM
+          echo "}" >> $BC_MSM
+
+      # 6. 终极兜底：源码Kbuild注释安全驱动编译
+      - name: 源码级拦截Knox/RKP编译节点
+        run: |
+          find kernel_platform/msm-kernel/drivers/samsung -name Kbuild -type f \
+          -exec sed -i 's/^obj-y.*knox/#obj-y/g; s/^obj-y.*rkp/#obj-y/g; s/^obj-y.*kdp/#obj-y/g; s/^obj-y.*security/#obj-y/g' {} \;
+
+      # 7. 深度清理缓存防止配置残留覆盖
+      - name: 清理旧编译缓存&残留配置
+        run: |
+          rm -rf kernel_platform/common/out kernel_platform/msm-kernel/out
+          rm -rf out/ build.log
+          find kernel_platform -name ".config" -delete
+
+      # 权限修复
+      - name: 全局赋权+脚本换行修复
         run: |
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
 
-      # 6. 执行内核编译
+      # 执行三星原版GKI编译脚本
       - name: 执行内核编译
         run: |
           cd $GITHUB_WORKSPACE
@@ -75,32 +99,27 @@ jobs:
           export SKIP_GIT_CLEAN=1
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      # 7. 提取产物并打包 (Image + DTBO + KO)
-      - name: 提取产物并打包
+      # 打包AnyKernel3
+      - name: 提取产物打包内核刷入包
         run: |
           cd $GITHUB_WORKSPACE
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          
-          echo "🔍 正在全域打捞产物..."
           IMAGE_PATH=$(find . -name "Image" -not -path "./AK3/*" -type f | head -n 1)
           DTBO_PATH=$(find . -name "dtbo.img" -not -path "./AK3/*" -type f | head -n 1)
-          
           if [ -n "$IMAGE_PATH" ]; then
             cp -f "$IMAGE_PATH" AK3/
             [ -n "$DTBO_PATH" ] && cp -f "$DTBO_PATH" AK3/dtbo.img
-            
-            echo "📦 收集所有驱动模块 (.ko)..."
             mkdir -p AK3/modules
             find . -name "*.ko" -not -path "./AK3/*" -exec cp {} AK3/modules/ \;
-            
-            cd AK3 && zip -r "../S25_Kernel_SukiSU_$(date +%m%d%H%M).zip" . -x ".git/*"
+            cd AK3 && zip -r "../S25_Ultra_SukiSU_NoKnox_$(date +%m%d%H%M).zip" . -x ".git/*"
           else
-            echo "❌ 未找到 Image，请检查编译日志"
+            echo "❌ 未找到内核Image，请检查编译日志"
             exit 1
           fi
 
-      - name: 上传内核
+      # 上传成品
+      - name: 上传编译内核
         uses: actions/upload-artifact@v4
         with:
-          name: S25_SukiSU_Kernel
-          path: S25_Kernel_SukiSU_*.zip
+          name: S25_Ultra_SukiSU_去Knox内核
+          path: S25_Ultra_SukiSU_NoKnox_*.zip
