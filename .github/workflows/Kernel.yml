@@ -11,12 +11,23 @@ jobs:
       - name: Checkout 仓库代码
         uses: actions/checkout@v4
 
+      # 【新增核心步：大扫除】腾出 20GB+ 空间，防止编译到 877 步爆磁盘
+      - name: 极致空间清理
+        run: |
+          echo "🧹 正在清理垃圾，为 S25 腾空间..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+
       - name: 安装必备依赖
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
 
-      # 1. 把米下锅 (下载 1.5GB 源码包)
+      # 1. 下载源码包
       - name: 下载源码安装包
         run: |
           wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
@@ -27,11 +38,19 @@ jobs:
           unzip -o -q kernel_platform.zip -d .
           sudo rm -f kernel_platform.zip
 
-      # 3. 暴力赋权
-      - name: 暴力赋予全目录权限 & 修复换行符
+      # 3. 暴力赋权 & 初始化 Git (解决 PATHSPEC 报错的关键)
+      - name: 暴力赋权与初始化 Git
         run: |
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
+          
+          # 必须初始化 Git，否则收尾脚本会崩溃
+          git init
+          git config --global user.name "feng"
+          git config --global user.email "feng@example.com"
+          git config --global safe.directory '*'
+          git add .
+          git commit -m "initial commit" --no-gpg-sign || true
 
       # 4. 注入 Root 模块
       - name: 嵌入 SukiSU 模块
@@ -49,49 +68,53 @@ jobs:
           -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED \
           -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES
 
-      # 6. 执行内核编译
+      # 6. 再次固化变动 (解决注入 SU 导致的 Git 校验失败)
+      - name: 提交所有注入与配置改动
+        run: |
+          git add .
+          git commit -m "inject su and modify config" --no-gpg-sign || true
+
+      # 7. 执行内核编译
       - name: 执行内核编译
         run: |
           cd $GITHUB_WORKSPACE
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      # 7. 准备 AnyKernel3 打包模板 (补回来了！)
-      - name: 准备 AnyKernel3 模板
-        run: |
-          rm -rf AK3
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-
-      # 8. 全域打捞产物并打包
-      - name: 提取产物并打包
+      # 8. 准备 AnyKernel3 并暴力打捞
+      - name: 提取产物并打包 AnyKernel3
         run: |
           cd $GITHUB_WORKSPACE
-          echo "🔍 正在全域搜索 Image..."
-          # 全域搜索 Image，排除 AK3 本身，防止死循环
+          rm -rf AK3
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+          
+          echo "🔍 正在全域打捞 Image..."
+          # 搜寻编译生成的 Image
           IMAGE_PATH=$(find . -name "Image" -not -path "./AK3/*" -not -path "./.git/*" -type f | head -n 1)
+          DTBO_PATH=$(find . -name "dtbo.img" -not -path "./AK3/*" -not -path "./.git/*" -type f | head -n 1)
           
           if [ -z "$IMAGE_PATH" ]; then
-            echo "❌ 完犊子，Image 还是没影，编译出问题了！"
+            echo "❌ 没找到 Image，可能还是磁盘或 Git 问题！"
             exit 1
           fi
           
           echo "✅ 捕获 Image: $IMAGE_PATH"
           cp -f "$IMAGE_PATH" AK3/
           
-          # 搜索 DTBO (如果有的话)
-          DTBO_PATH=$(find . -name "dtbo.img" -not -path "./AK3/*" -type f | head -n 1)
-          [ -n "$DTBO_PATH" ] && cp -f "$DTBO_PATH" AK3/dtbo.img && echo "✅ 捕获 DTBO"
+          if [ -n "$DTBO_PATH" ]; then
+            echo "✅ 捕获 DTBO: $DTBO_PATH"
+            cp -f "$DTBO_PATH" AK3/dtbo.img
+          fi
           
-          # 搜索 驱动模块
+          # 抓取模块
           mkdir -p AK3/modules
           find . -name "*.ko" -not -path "./AK3/*" -exec cp {} AK3/modules/ \;
           
-          # 打包
           cd AK3
-          zip -r "../S25_Kernel_Final_$(date +%Y%m%d).zip" . -x ".git/*"
+          zip -r "../S25_Final_Kernel_$(date +%m%d%H%M).zip" . -x ".git/*"
 
-      # 9. 上传
+      # 9. 上传成品
       - name: 上传成品
         uses: actions/upload-artifact@v4
         with:
           name: S25_Final_Kernel
-          path: S25_Kernel_Final_*.zip
+          path: S25_Final_Kernel_*.zip
