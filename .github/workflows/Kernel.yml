@@ -22,7 +22,7 @@ jobs:
         run: |
           aria2c -x 16 -s 16 -k 1M -o kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
 
-      # 2. 合并解压 (保持原样，不乱删文件)
+      # 2. 合并解压
       - name: 根目录自动合并解压
         run: |
           unzip -o -q kernel_platform.zip -d .
@@ -34,29 +34,30 @@ jobs:
           cd kernel_platform/common
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
 
-      # 4. 【核心改动】通过 build.config 动态注入配置
-      # 这种方法修改的是编译过程中的临时 .config，不会触发源码文件的校验报错
+      # 4. 【核心修复】通过 build.config 动态注入配置 (解决 scripts/config 路径问题)
       - name: 修改 build.config 注入参数
         run: |
           echo "⚙️ 正在通过 build.config 钩子注入配置..."
           BC_FILE="kernel_platform/common/build.config.gki"
           
-          # 注入跳过校验的环境变量
+          # 注入环境变量，封住校验报错的嘴
           echo "export SKIP_DEFCONFIG_VALIDATION=true" >> $BC_FILE
           echo "export SKIP_GIT_CLEAN=1" >> $BC_FILE
           
-          # 定义钩子函数：在生成 defconfig 之后立刻执行
+          # 定义钩子函数
           echo "POST_DEFCONFIG_CMDS=\"set_configs\"" >> $BC_FILE
           echo "function set_configs() {" >> $BC_FILE
           echo "  echo '🛠️ 执行动态配置注入...'" >> $BC_FILE
-          # 注意：这里改的是 ${OUT_DIR}/.config
-          echo "  scripts/config --file \${OUT_DIR}/.config --set-str LOCALVERSION \"-S25\"" >> $BC_FILE
-          echo "  scripts/config --file \${OUT_DIR}/.config -e KPM" >> $BC_FILE
-          echo "  scripts/config --file \${OUT_DIR}/.config -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM" >> $BC_FILE
-          echo "  scripts/config --file \${OUT_DIR}/.config -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SELINUX" >> $BC_FILE
-          echo "  scripts/config --file \${OUT_DIR}/.config -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED" >> $BC_FILE
-          echo "  scripts/config --file \${OUT_DIR}/.config -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES" >> $BC_FILE
-          echo "  # 重新生成最终配置以确保生效" >> $BC_FILE
+          
+          # 使用 ${S_COMMON_OUT_DIR} 绝对路径定位脚本，防止 Exit 127 错误
+          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config --set-str LOCALVERSION \"-S25\"" >> $BC_FILE
+          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config -e KPM" >> $BC_FILE
+          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM" >> $BC_FILE
+          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SELINUX" >> $BC_FILE
+          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED" >> $BC_FILE
+          echo "  \${S_COMMON_OUT_DIR}/scripts/config --file \${OUT_DIR}/.config -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES" >> $BC_FILE
+          
+          echo "  echo '🔄 重新同步配置结构...'" >> $BC_FILE
           echo "  make -C \${S_COMMON_OUT_DIR} O=\${OUT_DIR} \${TOOL_ARGS} olddefconfig" >> $BC_FILE
           echo "}" >> $BC_FILE
 
@@ -70,7 +71,6 @@ jobs:
       - name: 执行内核编译
         run: |
           cd $GITHUB_WORKSPACE
-          # 在命令前也带上这两手，确保万无一失
           export SKIP_DEFCONFIG_VALIDATION=true
           export SKIP_GIT_CLEAN=1
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
@@ -81,7 +81,7 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
           
-          echo "🔍 正在搜寻产物..."
+          echo "🔍 正在全域打捞产物..."
           IMAGE_PATH=$(find . -name "Image" -not -path "./AK3/*" -type f | head -n 1)
           DTBO_PATH=$(find . -name "dtbo.img" -not -path "./AK3/*" -type f | head -n 1)
           
@@ -89,7 +89,7 @@ jobs:
             cp -f "$IMAGE_PATH" AK3/
             [ -n "$DTBO_PATH" ] && cp -f "$DTBO_PATH" AK3/dtbo.img
             
-            echo "📦 收集驱动模块 (.ko)..."
+            echo "📦 收集所有驱动模块 (.ko)..."
             mkdir -p AK3/modules
             find . -name "*.ko" -not -path "./AK3/*" -exec cp {} AK3/modules/ \;
             
