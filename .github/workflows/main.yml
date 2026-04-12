@@ -1,46 +1,77 @@
-name: 内核编译 & 卡刷包打包
+name: 全新纯净内核编译_权限软链修复版
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 初始化环境
+      # 1. 全局暴力清空工作区
+      - name: 全局初始化清理残留
+        run: |
+          cd $GITHUB_WORKSPACE
+          sudo rm -rf ./* .git/** || true
+          git clean -fdx
+
+      # 2. 拉取仓库脚本
+      - name: Checkout 拉取构建配置
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
+      # 3. 安装完整依赖
       - name: 安装编译依赖
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio
 
-      - name: 下载内核源码包 (kernel_platform.zip)
-        # 🔥 关键新增步骤：下载并解压内核源码包
+      # 4. 纯净下载+强制解压（杜绝缓存残留）
+      - name: 纯净下载内核源码
         run: |
-          echo "正在下载官方内核源码包..."
+          rm -rf kernel_platform kernel_platform.zip
           wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
-          echo "正在解压..."
-          unzip -q kernel_platform.zip
-          echo "解压完成，目录结构："
-          ls -la
-          # 检查关键文件是否存在
-          test -f kernel_platform/build_with_bazel.py && echo "✅ 内核包结构完整" || exit 1
+          unzip -q -o kernel_platform.zip
 
-      - name: 校验Bazel核心文件
+      # 5. 强力修复Git环境（解决pathspec/软链接恢复失败核心）
+      - name: 修复内核Git工作区
         run: |
-          ls -la kernel_platform/
-          test -f kernel_platform/build_with_bazel.py && echo "✅ 核心编译文件齐全" || exit 1
+          cd kernel_platform
+          rm -rf .git
+          git init
+          git config user.name "CleanBuild"
+          git config user.email "clean@build.local"
+          git add --force .
+          git commit -m "init tree" --no-gpg-sign || true
+          cd $GITHUB_WORKSPACE
 
-      - name: 注入SukiSU
+      # 6. 修复Clang权限 + 全局执行权限
+      - name: 修复预编译clang权限
+        run: |
+          chmod -R 775 kernel_platform/
+          chmod -R +x kernel_platform/prebuilts/clang/host/linux-x86/
+
+      # 7. 清理Bazel缓存防冲突
+      - name: 清空Bazel缓存
+        run: |
+          cd kernel_platform
+          rm -rf bazel-cache .bazel .bazelisk
+
+      # 8. 校验核心文件
+      - name: 校验Bazel编译主程序
+        run: |
+          test -f kernel_platform/build_with_bazel.py && echo "✅ 核心文件正常" || exit 1
+
+      # 9. 注入SukiSU
+      - name: 注入SukiSU模块
         run: |
           cd kernel_platform/common
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
           cd $GITHUB_WORKSPACE
 
-      - name: 修补内核配置
+      #10. 配置裁剪
+      - name: 修改内核Defconfig
         run: |
           CONFIG_SCRIPT="./kernel_platform/common/scripts/config"
           GKI_DEFCONFIG="./kernel_platform/common/arch/arm64/configs/gki_defconfig"
@@ -48,21 +79,23 @@ jobs:
           $CONFIG_SCRIPT --file $GKI_DEFCONFIG \
           --set-str LOCALVERSION "-S25" -e KPM \
           -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM \
-          -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SECURITY_SELINUX \
+          -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SELINUX \
           -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED \
           -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES
 
-      - name: 执行编译脚本(无./)
+      #11. 执行编译
+      - name: 启动内核编译
         run: |
           chmod +x build_kernel_GKI.sh
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
+      #12. 打包流程
       - name: 克隆AnyKernel3
         run: |
           rm -rf AK3
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
 
-      - name: 全局查找内核产物
+      - name: 拷贝内核产物
         run: |
           IMAGE=$(find "$GITHUB_WORKSPACE" -name Image -type f | head -n1)
           DTBO=$(find "$GITHUB_WORKSPACE" -name dtbo.img -type f | head -n1)
@@ -72,15 +105,15 @@ jobs:
           mkdir -p AK3/modules
           find "$GITHUB_WORKSPACE" -name "*.ko" -exec cp {} AK3/modules/ \;
 
-      - name: 打包卡刷包
+      - name: 打包卡刷ZIP
         run: |
           cd AK3
-          ZIP_NAME="S25Ultra_Kernel_SukiSU_$(date +%Y%m%d).zip"
+          ZIP_NAME="S25Ultra_SukiSU_Final_$(date +%Y%m%d).zip"
           zip -r "../$ZIP_NAME" . -x ".git/*"
           cd ..
 
-      - name: 上传卡刷包
+      - name: 上传成品
         uses: actions/upload-artifact@v4
         with:
-          name: S25Ultra_Kernel_Flash
-          path: S25Ultra_Kernel_SukiSU_*.zip
+          name: S25Ultra_Kernel_Release
+          path: S25Ultra_SukiSU_Final_*.zip
