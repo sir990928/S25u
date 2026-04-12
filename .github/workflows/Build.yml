@@ -1,10 +1,137 @@
+name: 全新纯净内核编译_终极修复版
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # 第一步：拉取仓库核心配置
+      - name: Checkout 拉取仓库脚本
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # 第二步：清理工作区
+      - name: 精准清除历史残留
+        run: |
+          sudo rm -rf kernel_platform kernel_platform.zip AK3 *.zip build.log || true
+
+      # 第三步：安装编译依赖
+      - name: 安装内核编译必备依赖
+        run: |
+          sudo apt update -y
+          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio
+
+      # 第四步：下载并解压 (修复目录偏移逻辑)
       - name: 下载内核源码&干净解压
         run: |
-          rm -rf kernel_platform kernel_platform.zip
           wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
-          # 使用 -j 可能破坏目录结构，建议先解压再移动
           unzip -q -o kernel_platform.zip
-          # 💡 核心逻辑：如果解压出来发现多了一层目录，把它移出来
-          if [ ! -d "kernel_platform" ] && [ -d "kernel_platform_main" ]; then mv kernel_platform_main kernel_platform; fi
-          # 看看现在里面到底有啥，脑壳不痛
-          ls -R | grep build_with_bazel.py
+          # 核心纠错：如果解压出来名字不对，强行重命名为 kernel_platform
+          if [ ! -d "kernel_platform" ]; then
+            DIR_NAME=$(ls -d */ | grep -v "AK3" | head -n1 | sed 's/\///')
+            if [ -n "$DIR_NAME" ]; then mv "$DIR_NAME" kernel_platform; fi
+          fi
+
+      # 第五步：初始化子目录Git (修复软链/权限追踪)
+      - name: 修复内核子目录Git环境
+        run: |
+          cd kernel_platform
+          rm -rf .git
+          git init
+          git config user.name "KernelBuild"
+          git config user.email "build@kernel.local"
+          git add --force . || true
+          git commit -m "init kernel source tree" --no-gpg-sign || true
+
+      # 第六步：赋予工具链执行权限
+      - name: 补齐预编译工具执行权限
+        run: |
+          chmod -R 755 kernel_platform/
+          find kernel_platform/prebuilts -type f -name "clang*" -exec chmod +x {} +
+
+      # 第七步：清理缓存
+      - name: 清空Bazel构建缓存
+        run: |
+          cd kernel_platform
+          rm -rf bazel-cache .bazel .bazelisk
+
+      # 第八步：智能校验核心文件 (增强版)
+      - name: 校验Bazel核心脚本
+        run: |
+          # 尝试在整个解压目录寻找目标文件
+          REAL_PY=$(find . -name "build_with_bazel.py" | head -n 1)
+          if [ -z "$REAL_PY" ]; then
+            echo "❌ 找不到 build_with_bazel.py，请检查压缩包内容！"
+            ls -R | grep ".py" || true
+            exit 1
+          else
+            echo "✅ 核心脚本位于: $REAL_PY"
+            # 确保它在执行脚本预期的位置
+            if [ "$REAL_PY" != "./kernel_platform/build_with_bazel.py" ]; then
+              mkdir -p kernel_platform
+              cp "$REAL_PY" kernel_platform/
+            fi
+          fi
+
+      # 第九步：注入SukiSU Root模块
+      - name: 嵌入SukiSU内核模块
+        run: |
+          cd kernel_platform/common
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
+
+      # 第十步：内核Defconfig优化
+      - name: 修改Defconfig关闭调试冗余
+        run: |
+          CONFIG_SCRIPT="./kernel_platform/common/scripts/config"
+          GKI_DEFCONFIG="./kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          chmod +x "$CONFIG_SCRIPT"
+          $CONFIG_SCRIPT --file $GKI_DEFCONFIG \
+          --set-str LOCALVERSION "-S25" -e KPM \
+          -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM \
+          -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SELINUX \
+          -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED \
+          -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES
+
+      # 第十一步：执行编译
+      - name: 执行GKI内核编译脚本
+        run: |
+          chmod +x build_kernel_GKI.sh
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun
+
+      # 第十二步：准备AnyKernel3
+      - name: 纯净克隆AnyKernel3
+        run: |
+          rm -rf AK3
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+
+      # 第十三步: 产物迁移
+      - name: 复制Image/DTBO/驱动模块
+        run: |
+          IMAGE=$(find kernel_platform/out -name Image -type f | head -n1)
+          DTBO=$(find kernel_platform/out -name dtbo.img -type f | head -n1)
+          if [ -z "$IMAGE" ]; then
+            echo "❌ 编译产物未生成，请检查编译日志！"
+            exit 1
+          fi
+          cp -f "$IMAGE" AK3/
+          [ -f "$DTBO" ] && cp -f "$DTBO" AK3/dtbo.img
+          mkdir -p AK3/modules
+          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
+
+      # 第十四步: 打包
+      - name: 生成最终内核卡刷包
+        run: |
+          cd AK3
+          ZIP_NAME="S25Ultra_SukiSU_Final_Kernel_$(date +%Y%m%d).zip"
+          zip -r "../$ZIP_NAME" . -x ".git/*"
+
+      # 第十五步: 上传
+      - name: 上传内核卡刷包到产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25Ultra_Ready_Flash_Kernel
+          path: S25Ultra_SukiSU_Final_Kernel_*.zip
