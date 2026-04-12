@@ -8,69 +8,75 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 第一步：拉取仓库
       - name: Checkout 仓库代码
         uses: actions/checkout@v4
 
-      # 第二步：安装必要工具
       - name: 安装必备依赖
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
 
-      # 第三步：在根目录直接合并解压 (自带完整路径)
+      # 第一步：把米下锅（从 Release 下载 1.5GB 的大包）
+      - name: 下载源码安装包
+        run: |
+          echo "📡 正在从 Release 下载源码包..."
+          wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
+
+      # 第二步：根目录直接合并解压
       - name: 根目录自动合并解压
         run: |
           if [ -f "kernel_platform.zip" ]; then
             echo "💉 正在执行合并覆盖（保留原目录独有文件）..."
-            # -o: 强制覆盖同名文件
-            # -q: 安静执行
-            # 这里的 -d . 就是解压到当前工作区根目录
+            # -o: 覆盖同名文件
             unzip -o -q kernel_platform.zip -d .
-            echo "✅ 合并解压完成！"
+            sudo rm -f kernel_platform.zip
+            echo "✅ 合并完成！"
           else
-            echo "❌ 未在根目录找到 kernel_platform.zip"
+            echo "❌ 下载失败，未找到安装包！"
             exit 1
           fi
 
-      # 第四步：暴力赋权 (覆盖后必须重写权限)
+      # 第三步：暴力赋权并修复换行符
       - name: 暴力赋予全目录权限 & 修复换行符
         run: |
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
 
-      # 第五步：注入 Root 模块
+      # 第四步：注入 Root 模块
       - name: 嵌入 SukiSU 模块
         run: |
-          # 因为是完整路径，现在直接 cd 进对应的目录
           cd kernel_platform/common
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
 
-      # 第六步：Defconfig 优化
+      # 第五步：修改 Defconfig 优化配置
       - name: 修改 Defconfig 配置
         run: |
-          # 使用合并后的完整路径执行
+          # 执行修改脚本
           ./kernel_platform/common/scripts/config --file ./kernel_platform/common/arch/arm64/configs/gki_defconfig \
           --set-str LOCALVERSION "-S25" -e KPM \
           -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM \
           -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SELINUX \
           -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED \
           -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES
+          echo "✅ Defconfig 修改完成"
 
-      # 第七步：启动内核编译
+      # 第六步：返回根目录并执行编译
       - name: 执行内核编译
         run: |
-          # 脚本就在根目录，直接起速
+          # 显式切换回根目录，确保万无一失
+          cd $GITHUB_WORKSPACE
+          echo "🚀 正在根目录启动编译脚本..."
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      # 第八步：提取产物并打包
+      # 第七步：提取产物并打包
       - name: 提取产物并打包 AnyKernel3
         run: |
+          cd $GITHUB_WORKSPACE
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          # 这里的 out 目录通常在 kernel_platform/out
+          # 在 kernel_platform/out 中搜寻 Image
           IMAGE=$(find kernel_platform/out -name Image -type f | head -n1)
           if [ -z "$IMAGE" ]; then 
-            echo "❌ 关键产物 Image 缺失，编译可能失败！"
+            echo "❌ 编译可能失败，未找到 Image！"
             exit 1
           fi
           cp -f "$IMAGE" AK3/
@@ -78,7 +84,7 @@ jobs:
           find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
           cd AK3 && zip -r "../S25_Final_Kernel.zip" . -x ".git/*"
 
-      # 第九步：上传
+      # 第八步：上传
       - name: 上传最终产物
         uses: actions/upload-artifact@v4
         with:
