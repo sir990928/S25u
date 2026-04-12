@@ -1,4 +1,4 @@
-name: 全新纯净内核编译_权限软链修复版
+name: 全新纯净内核编译_终极修复版
 on:
   push:
     branches: [ main ]
@@ -8,70 +8,69 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1. 全局暴力清空工作区
-      - name: 全局初始化清理残留
-        run: |
-          cd $GITHUB_WORKSPACE
-          sudo rm -rf ./* .git/** || true
-          git clean -fdx
-
-      # 2. 拉取仓库脚本
-      - name: Checkout 拉取构建配置
+      # 第一步：先拉取仓库核心配置【保住根目录.git，绝不删除】
+      - name: Checkout 拉取仓库脚本(保留Git仓库核心)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # 3. 安装完整依赖
-      - name: 安装编译依赖
+      # 第二步：安全清理工作区(仅删垃圾，不动.git)
+      - name: 精准清除历史残留 破除缓存
+        run: |
+          cd $GITHUB_WORKSPACE
+          sudo rm -rf kernel_platform kernel_platform.zip AK3 *.zip build.log || true
+
+      # 第三步：安装全套编译依赖
+      - name: 安装内核编译必备依赖
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio
 
-      # 4. 纯净下载+强制解压（杜绝缓存残留）
-      - name: 纯净下载内核源码
+      # 第四步：纯净下载内核包 + 强制覆盖解压
+      - name: 下载内核源码&干净解压
         run: |
           rm -rf kernel_platform kernel_platform.zip
           wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
           unzip -q -o kernel_platform.zip
 
-      # 5. 强力修复Git环境（解决pathspec/软链接恢复失败核心）
-      - name: 修复内核Git工作区
+      # 第五步：单独给kernel_platform子目录初始化Git(修复pathspec/软链报错)
+      - name: 修复内核子目录Git环境
         run: |
           cd kernel_platform
           rm -rf .git
           git init
-          git config user.name "CleanBuild"
-          git config user.email "clean@build.local"
-          git add --force .
-          git commit -m "init tree" --no-gpg-sign || true
+          git config user.name "KernelBuild"
+          git config user.email "build@kernel.local"
+          git add --force . || true
+          git commit -m "init kernel source tree" --no-gpg-sign || true
           cd $GITHUB_WORKSPACE
 
-      # 6. 修复Clang权限 + 全局执行权限
-      - name: 修复预编译clang权限
+      # 第六步：修复Clang编译器权限 解决permission denied
+      - name: 补齐预编译工具执行权限
         run: |
-          chmod -R 775 kernel_platform/
+          chmod -R 755 kernel_platform/
           chmod -R +x kernel_platform/prebuilts/clang/host/linux-x86/
 
-      # 7. 清理Bazel缓存防冲突
-      - name: 清空Bazel缓存
+      # 第七步：清理Bazel缓存 避免编译冲突
+      - name: 清空Bazel构建缓存
         run: |
           cd kernel_platform
           rm -rf bazel-cache .bazel .bazelisk
 
-      # 8. 校验核心文件
-      - name: 校验Bazel编译主程序
+      # 第八步：校验核心编译文件完整性
+      - name: 校验Bazel核心脚本
         run: |
-          test -f kernel_platform/build_with_bazel.py && echo "✅ 核心文件正常" || exit 1
+          test -f kernel_platform/build_with_bazel.py && echo "✅ 内核核心文件就绪" || exit 1
 
-      # 9. 注入SukiSU
-      - name: 注入SukiSU模块
+      # 第九步：注入SukiSU Root模块
+      - name: 嵌入SukiSU内核模块
         run: |
           cd kernel_platform/common
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
           cd $GITHUB_WORKSPACE
 
-      #10. 配置裁剪
-      - name: 修改内核Defconfig
+      # 第十步：裁剪优化内核配置
+      - name: 修改Defconfig关闭调试冗余
         run: |
           CONFIG_SCRIPT="./kernel_platform/common/scripts/config"
           GKI_DEFCONFIG="./kernel_platform/common/arch/arm64/configs/gki_defconfig"
@@ -83,37 +82,40 @@ jobs:
           -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED \
           -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES
 
-      #11. 执行编译
-      - name: 启动内核编译
+      # 第十一步：启动内核编译
+      - name: 执行GKI内核编译脚本
         run: |
           chmod +x build_kernel_GKI.sh
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      #12. 打包流程
-      - name: 克隆AnyKernel3
+      # 第十二步：准备打包模板
+      - name: 纯净克隆AnyKernel3
         run: |
           rm -rf AK3
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
 
-      - name: 拷贝内核产物
+      # 第十三步:迁移编译产物
+      - name: 复制Image/DTBO/驱动模块
         run: |
           IMAGE=$(find "$GITHUB_WORKSPACE" -name Image -type f | head -n1)
           DTBO=$(find "$GITHUB_WORKSPACE" -name dtbo.img -type f | head -n1)
-          [ ! "$IMAGE" ] && echo "❌ 未找到Image" && exit 1
+          [ ! "$IMAGE" ] && echo "❌ 未找到内核镜像" && exit 1
           cp -f "$IMAGE" AK3/
           [ -f "$DTBO" ] && cp -f "$DTBO" AK3/dtbo.img
           mkdir -p AK3/modules
           find "$GITHUB_WORKSPACE" -name "*.ko" -exec cp {} AK3/modules/ \;
 
-      - name: 打包卡刷ZIP
+      # 第十四步:打包卡刷ZIP
+      - name: 生成最终内核卡刷包
         run: |
           cd AK3
-          ZIP_NAME="S25Ultra_SukiSU_Final_$(date +%Y%m%d).zip"
+          ZIP_NAME="S25Ultra_SukiSU_Final_Kernel_$(date +%Y%m%d).zip"
           zip -r "../$ZIP_NAME" . -x ".git/*"
           cd ..
 
-      - name: 上传成品
+      # 第十五步:上传成品
+      - name: 上传内核卡刷包到产物
         uses: actions/upload-artifact@v4
         with:
-          name: S25Ultra_Kernel_Release
-          path: S25Ultra_SukiSU_Final_*.zip
+          name: S25Ultra_Ready_Flash_Kernel
+          path: S25Ultra_SukiSU_Final_Kernel_*.zip
