@@ -1,0 +1,111 @@
+name: 全新纯净内核编译_无缓存隔离版
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # 第一步：全局暴力清空工作区 彻底隔离历史残留缓存
+      - name: 全局初始化清理工作区
+        run: |
+          cd $GITHUB_WORKSPACE
+          sudo rm -rf ./* .git/** || true
+          git clean -fdx
+
+      # 拉取仓库配置脚本（仅拉当前仓库文件，不含旧内核）
+      - name: Checkout 拉取构建脚本
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # 安装全套编译依赖
+      - name: 安装内核编译依赖
+        run: |
+          sudo apt update -y
+          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio
+
+      # 彻底删除旧内核+压缩包 全新下载+强制覆盖解压
+      - name: 纯净下载内核源码包 强制解压
+        run: |
+          rm -rf kernel_platform kernel_platform.zip
+          wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
+          # -q静默 -o强制覆盖 避免交互阻塞
+          unzip -q -o kernel_platform.zip
+
+      # 修复Git环境 解决pathspec/软链接恢复报错
+      - name: 修复内核Git上下文&权限
+        run: |
+          cd kernel_platform
+          git init
+          git config user.name "CleanBuild"
+          git config user.email "clean@build.local"
+          git add . --force || true
+          chmod -R 755 .
+          cd $GITHUB_WORKSPACE
+
+      # 校验Bazel核心编译文件
+      - name: 校验核心编译文件完整性
+        run: |
+          ls -la kernel_platform/
+          test -f kernel_platform/build_with_bazel.py && echo "✅ 内核核心文件就绪" || exit 1
+
+      # 注入SukiSU模块
+      - name: 注入SukiSU Root模块
+        run: |
+          cd kernel_platform/common
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
+          cd $GITHUB_WORKSPACE
+
+      # 内核配置裁剪优化
+      - name: 修补内核Defconfig配置
+        run: |
+          CONFIG_SCRIPT="./kernel_platform/common/scripts/config"
+          GKI_DEFCONFIG="./kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          chmod +x "$CONFIG_SCRIPT"
+          $CONFIG_SCRIPT --file $GKI_DEFCONFIG \
+          --set-str LOCALVERSION "-S25" -e KPM \
+          -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM \
+          -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SELINUX \
+          -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED \
+          -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES
+
+      # 执行内核编译
+      - name: 执行GKI内核编译
+        run: |
+          chmod +x build_kernel_GKI.sh
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun
+
+      # 克隆打包Recovery卡刷内核模板
+      - name: 克隆AnyKernel3打包框架
+        run: |
+          rm -rf AK3
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+
+      # 拷贝编译产物Image/DTBO/驱动模块
+      - name: 迁移内核编译产物
+        run: |
+          IMAGE=$(find "$GITHUB_WORKSPACE" -name Image -type f | head -n1)
+          DTBO=$(find "$GITHUB_WORKSPACE" -name dtbo.img -type f | head -n1)
+          [ ! "$IMAGE" ] && echo "❌ 未找到内核Image镜像" && exit 1
+          cp -f "$IMAGE" AK3/
+          [ -f "$DTBO" ] && cp -f "$DTBO" AK3/dtbo.img
+          mkdir -p AK3/modules
+          find "$GITHUB_WORKSPACE" -name "*.ko" -exec cp {} AK3/modules/ \;
+
+      # 打包最终卡刷ZIP
+      - name: 打包S25内核卡刷包
+        run: |
+          cd AK3
+          ZIP_NAME="S25Ultra_SukiSU_CleanKernel_$(date +%Y%m%d).zip"
+          zip -r "../$ZIP_NAME" . -x ".git/*"
+          cd ..
+
+      # 上传成品到Artifacts
+      - name: 上传内核卡刷包
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25Ultra_Clean_Kernel_Flash
+          path: S25Ultra_SukiSU_CleanKernel_*.zip
