@@ -1,3 +1,6 @@
+Run test -f kernel_platform/build_with_bazel.py && echo "✅ 内核核心文件就绪" || exit 1
+Error: Process completed with exit code 1.
+0s
 name: 全新纯净内核编译_终极修复版
 on:
   push:
