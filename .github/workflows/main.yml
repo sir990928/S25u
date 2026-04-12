@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 拉取仓库完整源码
+      - name: 初始化环境
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -16,6 +16,18 @@ jobs:
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio
+
+      - name: 下载内核源码包 (kernel_platform.zip)
+        # 🔥 关键新增步骤：下载并解压内核源码包
+        run: |
+          echo "正在下载官方内核源码包..."
+          wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
+          echo "正在解压..."
+          unzip -q kernel_platform.zip
+          echo "解压完成，目录结构："
+          ls -la
+          # 检查关键文件是否存在
+          test -f kernel_platform/build_with_bazel.py && echo "✅ 内核包结构完整" || exit 1
 
       - name: 校验Bazel核心文件
         run: |
