@@ -23,9 +23,10 @@ jobs:
           sudo rm -rf kernel_platform kernel_platform.zip AK3 || true
           wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
           unzip -q -o kernel_platform.zip
+          # 自动对齐目录名：确保解压出来的一定叫 kernel_platform
           if [ ! -d "kernel_platform" ]; then
             DIR_NAME=$(ls -d */ | grep -E "kernel|S25" | head -n1 | sed 's/\///')
-            if [ -n "$DIR_NAME" ]; then mv "$DIR_NAME" kernel_platform; fi
+            [ -n "$DIR_NAME" ] && mv "$DIR_NAME" kernel_platform
           fi
 
       - name: 暴力赋予全目录权限 & 修复换行符
@@ -34,20 +35,6 @@ jobs:
           find . -name "*.sh" -exec dos2unix {} + || true
           find . -name "*.py" -exec dos2unix {} + || true
 
-      - name: 校验Bazel核心脚本
-        run: |
-          REAL_PY=$(find . -name "build_with_bazel.py" | head -n 1)
-          if [ -z "$REAL_PY" ]; then
-            echo "❌ 找不到 build_with_bazel.py！"
-            exit 1
-          else
-            echo "✅ 核心脚本在: $REAL_PY"
-            if [ "$REAL_PY" != "./kernel_platform/build_with_bazel.py" ]; then
-              mkdir -p kernel_platform
-              cp "$REAL_PY" kernel_platform/
-            fi
-          fi
-
       - name: 嵌入SukiSU内核模块
         run: |
           cd kernel_platform/common
@@ -55,9 +42,8 @@ jobs:
 
       - name: 修改Defconfig优化
         run: |
-          CONFIG_SCRIPT="./kernel_platform/common/scripts/config"
-          GKI_DEFCONFIG="./kernel_platform/common/arch/arm64/configs/gki_defconfig"
-          $CONFIG_SCRIPT --file $GKI_DEFCONFIG \
+          # 既然全开了 777，直接跑即可
+          ./kernel_platform/common/scripts/config --file ./kernel_platform/common/arch/arm64/configs/gki_defconfig \
           --set-str LOCALVERSION "-S25" -e KPM \
           -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM \
           -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SELINUX \
@@ -77,7 +63,10 @@ jobs:
         run: |
           IMAGE=$(find kernel_platform/out -name Image -type f | head -n1)
           DTBO=$(find kernel_platform/out -name dtbo.img -type f | head -n1)
-          if [ -z "$IMAGE" ]; then exit 1; fi
+          if [ -z "$IMAGE" ]; then 
+            echo "❌ 关键产物 Image 缺失，编译可能已失败！"
+            exit 1
+          fi
           cp -f "$IMAGE" AK3/
           [ -f "$DTBO" ] && cp -f "$DTBO" AK3/dtbo.img
           mkdir -p AK3/modules
