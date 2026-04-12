@@ -1,0 +1,74 @@
+name: 内核编译 & 卡刷包打包
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取仓库完整源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt update -y
+          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio
+
+      - name: 校验Bazel核心文件
+        run: |
+          ls -la kernel_platform/
+          test -f kernel_platform/build_with_bazel.py && echo "✅ 核心编译文件齐全" || exit 1
+
+      - name: 注入SukiSU
+        run: |
+          cd kernel_platform/common
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
+          cd $GITHUB_WORKSPACE
+
+      - name: 修补内核配置
+        run: |
+          CONFIG_SCRIPT="./kernel_platform/common/scripts/config"
+          GKI_DEFCONFIG="./kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          chmod +x "$CONFIG_SCRIPT"
+          $CONFIG_SCRIPT --file $GKI_DEFCONFIG \
+          --set-str LOCALVERSION "-S25" -e KPM \
+          -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM \
+          -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SECURITY_SELINUX \
+          -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED \
+          -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES
+
+      - name: 执行编译脚本(无./)
+        run: |
+          chmod +x build_kernel_GKI.sh
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun
+
+      - name: 克隆AnyKernel3
+        run: |
+          rm -rf AK3
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+
+      - name: 全局查找内核产物
+        run: |
+          IMAGE=$(find "$GITHUB_WORKSPACE" -name Image -type f | head -n1)
+          DTBO=$(find "$GITHUB_WORKSPACE" -name dtbo.img -type f | head -n1)
+          [ ! "$IMAGE" ] && echo "❌ 未找到Image" && exit 1
+          cp -f "$IMAGE" AK3/
+          [ -f "$DTBO" ] && cp -f "$DTBO" AK3/dtbo.img
+          mkdir -p AK3/modules
+          find "$GITHUB_WORKSPACE" -name "*.ko" -exec cp {} AK3/modules/ \;
+
+      - name: 打包卡刷包
+        run: |
+          cd AK3
+          ZIP_NAME="S25Ultra_Kernel_SukiSU_$(date +%Y%m%d).zip"
+          zip -r "../$ZIP_NAME" . -x ".git/*"
+          cd ..
+
+      - name: 上传卡刷包
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25Ultra_Kernel_Flash
+          path: S25Ultra_Kernel_SukiSU_*.zip
