@@ -22,7 +22,7 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force
 
-      - name: 安装必备编译依赖(含git命令仅用于克隆AK3)
+      - name: 安装必备编译依赖(仅保留git命令用于克隆AK3)
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
@@ -30,20 +30,23 @@ jobs:
       - name: 下载编译工具链
         run: wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
 
-      - name: 解压工具链 + 彻底删除所有.git(纯文件模式核心)
+      - name: 解压工具链 & 权限预处理
         run: |
           unzip -o -q kernel_platform.zip -d .
           rm -f kernel_platform.zip
-          # 全局清除所有Git版本库目录，规避内核校验
-          find . -name ".git" -type d -exec rm -rf {} + || true
-          # 权限修复 & 脚本换行兼容
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
 
-      - name: 在线注入 SukiSU(纯网络下载无需本地Git)
+      # 关键1：先在线注入SukiSU（纯网络，依赖原始检出.git不影响）
+      - name: 在线注入 SukiSU
         run: |
           cd kernel_platform/common
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
+
+      # 关键2：注入完成后 → 彻底删除所有.git 断绝本地Git依赖
+      - name: 全局清除所有 .git 目录
+        run: |
+          find . -name ".git" -type d -exec rm -rf {} + || true
 
       - name: 修改 Defconfig 精简去调试配置
         run: |
@@ -59,18 +62,18 @@ jobs:
           cd $GITHUB_WORKSPACE
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 克隆AnyKernel3 + 打捞编译产物打包
+      # 仅用系统git命令克隆独立AK3（不影响内核源码区）
+      - name: 克隆AnyKernel3 + 打捞产物打包
         run: |
           cd $GITHUB_WORKSPACE
           rm -rf AK3
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
           
-          echo "🔍 检索内核镜像Image/dtbo"
           IMAGE_PATH=$(find . -name "Image" -not -path "./AK3/*" -type f | head -n 1)
           DTBO_PATH=$(find . -name "dtbo.img" -not -path "./AK3/*" -type f | head -n 1)
           
           if [ -z "$IMAGE_PATH" ]; then
-            echo "❌ 未找到编译产物Image，编译失败终止"
+            echo "❌ 未找到Image内核镜像"
             exit 1
           fi
           
