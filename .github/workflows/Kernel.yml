@@ -28,12 +28,116 @@ jobs:
           unzip -o -q kernel_platform.zip -d .
           rm -f kernel_platform.zip
 
-      # ========== 【新增：前置静态改配置 - 唯一修改区】==========
-      # 替代原来报错的build.config钩子，Bazel兼容不报错
-      - name: 前置静态关闭Knox/安全配置(修复127报错核心)
+      # ========== 唯一修改区：优化前置静态改配置（修复编译校验失败） ==========
+      - name: 前置清理并重写内核Def（规范内核配置格式）
         run: |
-          # 修改Common核心def
-          GKI_DEF=kernel_platform/common/arch/arm64/configs/gki_defconfig
+          # ------------------- 修改 common GKI 核心配置 -------------------
+          GKI_DEF="kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          # 删除所有冲突安全配置行
+          sed -i '/CONFIG_.*KNOX/d;/CONFIG_.*RKP/d;/CONFIG_.*KDP/d' "$GKI_DEF"
+          sed -i '/CONFIG_MODULE_SIG/d;/CONFIG_LOCKDOWN/d;/CONFIG_SEC_/d' "$GKI_DEF"
+          sed -i '/CONFIG_DEBUG_/d;/CONFIG_KASAN/d;/CONFIG_UBSAN/d;/CONFIG_GCOV/d' "$GKI_DEF"
+          # 覆盖写入标准关闭配置（不冗余追加）
+          cat > "$GKI_DEF" <<EOF
+CONFIG_LOCALVERSION="-S25-DisableKnox"
+CONFIG_KPM=y
+CONFIG_UH=n
+CONFIG_RKP=n
+CONFIG_KDP=n
+CONFIG_SECURITY_DEFEX=n
+CONFIG_INTEGRITY=n
+CONFIG_FIVE=n
+CONFIG_KNOX_NCM=n
+CONFIG_LOCALVERSION_AUTO=n
+CONFIG_DEFAULT_SECURITY_DAC=n
+CONFIG_DEFAULT_SELINUX=n
+CONFIG_TRIM_UNUSED_KSYMS=n
+CONFIG_DEBUG_INFO=n
+CONFIG_DEBUG_INFO_BTF=n
+CONFIG_DEBUG_INFO_REDUCED=n
+CONFIG_DEBUG_FS=n
+CONFIG_GCOV=n
+CONFIG_KASAN=n
+CONFIG_UBSAN=n
+CONFIG_KPROBES=n
+CONFIG_MODULE_SIG=n
+CONFIG_MODULE_SIG_FORCE=n
+CONFIG_LOCKDOWN_NONE=y
+EOF
+
+          # ------------------- 修改 msm 厂商定制配置 -------------------
+          MSM_DEF="kernel_platform/msm-kernel/arch/arm64/configs/*_gki_defconfig"
+          sed -i '/CONFIG_SEC_KNOX/d;/CONFIG_SEC_RKP/d;/CONFIG_QCOM_SECURE_BOOT/d' $MSM_DEF
+          cat >> $MSM_DEF <<EOF
+CONFIG_SEC_KNOX=n
+CONFIG_SEC_RKP=n
+CONFIG_SEC_KNOX_SUPPORT=n
+CONFIG_SEC_HARDENING=n
+CONFIG_SEC_BOOT_SECURITY=n
+CONFIG_SEC_ANTIROLLBACK=n
+CONFIG_SEC_VBMETA_CHECK=n
+CONFIG_KNOX_MDM=n
+CONFIG_QCOM_SECURE_BOOT=n
+EOF
+      # ====================================================================
+
+      # 3. 注入 SukiSU（原样保留）
+      - name: 在线注入 SukiSU
+        run: |
+          cd kernel_platform/common
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
+
+      # 6. 终极兜底：源码Kbuild注释安全驱动编译（原样保留）
+      - name: 源码级拦截Knox/RKP编译节点
+        run: |
+          find kernel_platform/msm-kernel/drivers/samsung -name Kbuild -type f \
+          -exec sed -i 's/^obj-y.*knox/#obj-y/g; s/^obj-y.*rkp/#obj-y/g; s/^obj-y.*kdp/#obj-y/g; s/^obj-y.*security/#obj-y/g' {} \;
+
+      # 7. 深度清理缓存防止配置残留覆盖（原样保留）
+      - name: 清理旧编译缓存&残留配置
+        run: |
+          rm -rf kernel_platform/common/out kernel_platform/msm-kernel/out
+          rm -rf out/ build.log
+          find kernel_platform -name ".config" -delete
+
+      # 权限修复（原样保留）
+      - name: 全局赋权+脚本换行修复
+        run: |
+          sudo chmod -R 777 $GITHUB_WORKSPACE
+          find . -name "*.sh" -exec dos2unix {} + || true
+
+      # 执行三星原版GKI编译脚本（原样保留）
+      - name: 执行内核编译
+        run: |
+          cd $GITHUB_WORKSPACE
+          export SKIP_DEFCONFIG_VALIDATION=true
+          export SKIP_GIT_CLEAN=1
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun
+
+      # 打包AnyKernel3（原样保留）
+      - name: 提取产物打包内核刷入包
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+          IMAGE_PATH=$(find . -name "Image" -not -path "./AK3/*" -type f | head -n 1)
+          DTBO_PATH=$(find . -name "dtbo.img" -not -path "./AK3/*" -type f | head -n 1)
+          if [ -n "$IMAGE_PATH" ]; then
+            cp -f "$IMAGE_PATH" AK3/
+            [ -n "$DTBO_PATH" ] && cp -f "$DTBO_PATH" AK3/dtbo.img
+            mkdir -p AK3/modules
+            find . -name "*.ko" -not -path "./AK3/*" -exec cp {} AK3/modules/ \;
+            cd AK3 && zip -r "../S25_Ultra_SukiSU_NoKnox_$(date +%m%d%H%M).zip" . -x ".git/*"
+          else
+            echo "❌ 未找到内核Image，请检查编译日志"
+            exit 1
+          fi
+
+      # 上传成品（原样保留）
+      - name: 上传编译内核
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_Ultra_SukiSU_去Knox内核
+          path: S25_Ultra_SukiSU_NoKnox_*.zip
           sed -i '/CONFIG.*KNOX/d;/CONFIG.*RKP/d;/CONFIG.*MODULE_SIG/d;/CONFIG_LOCKDOWN/d' $GKI_DEF
           cat >> $GKI_DEF << EOF
 CONFIG_LOCALVERSION="-S25-DisableKnox"
