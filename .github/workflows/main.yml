@@ -21,28 +21,48 @@ jobs:
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
 
-      # 进入内核目录 → 内置 SukiSU → 返回根目录
       - name: 内置 SukiSU (Builtin)
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           cd $GITHUB_WORKSPACE
 
-      # 编译 GKI 内核
-      - name: 开始编译内核
+      - name: 先 prepare 生成 .config
+        run: |
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun prepare
+
+      - name: 提取 .config 并修改配置
+        run: |
+          CONFIG_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" | head -n 1)
+          echo "找到.config：$CONFIG_PATH"
+
+          # 禁用安全
+          sed -i 's/CONFIG_KNOX=y/CONFIG_KNOX=n/g' "$CONFIG_PATH"
+          sed -i 's/CONFIG_SECURITY_SELINUX=y/CONFIG_SECURITY_SELINUX=n/g' "$CONFIG_PATH"
+          sed -i 's/CONFIG_DM_VERITY=y/CONFIG_DM_VERITY=n/g' "$CONFIG_PATH"
+          sed -i 's/CONFIG_AVB=y/CONFIG_AVB=n/g' "$CONFIG_PATH"
+
+          # 开启 KPM
+          echo "CONFIG_KPM=y" >> "$CONFIG_PATH"
+
+          # SukiSU
+          echo "CONFIG_KSU=y" >> "$CONFIG_PATH"
+          echo "CONFIG_KSU_ALLOW_SU_ROOT=y" >> "$CONFIG_PATH"
+
+          # 自定义内核名称 ←↓ 自己改成想要的名字
+          echo "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" >> "$CONFIG_PATH"
+
+      - name: 正式完整编译内核
         run: |
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      # 打包 AnyKernel3
-      - name: 打包刷机包
+      - name: 打包 AnyKernel3
         run: |
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
 
-          # 复制内核文件
           find . -name "Image" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
           find . -name "dtbo.img" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
 
-          # 复制模块
           mkdir -p AK3/modules
           find . -name "*.ko" -type f | grep -v AK3 | xargs -r cp -t AK3/modules/
 
