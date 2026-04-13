@@ -1,4 +1,4 @@
-name: S25_Ultra_Kernel_SukiSU_Fixed
+name: S25_Ultra_Kernel_Final_Fix
 on:
   push:
     branches: [ main ]
@@ -11,7 +11,7 @@ jobs:
       - name: Checkout 仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装必备依赖
+      - name: 安装必备
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
@@ -28,41 +28,45 @@ jobs:
         run: |
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
+          # 确保配置工具具备执行权限
+          chmod +x kernel_platform/common/scripts/config || true
 
-      # 3. 注入 SukiSU (使用官方一键命令，并修复 Git 环境报错)
+      # 3. 注入 SukiSU (修复 Git 环境报错)
       - name: 注入 SukiSU
         run: |
-          # 进入内核驱动所在的核心目录 (三星 S25 通常在 kernel_platform/common)
           cd kernel_platform/common
-          
-          # 关键：初始化一个临时的 Git 仓库，防止 setup.sh 报 pathspec 错误
+          # 初始化临时 Git 仓库，防止 setup.sh 报 pathspec 错误
           git init
           git config user.email "build@example.com"
           git config user.name "Builder"
           git add . && git commit -m "initial commit" || true
-          
           # 运行官方注入命令 (使用 builtin 模式)
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
-          
-          # 注入完成后，清理掉临时的 .git 目录，防止干扰后续 Bazel 编译
+          # 注入完成后清理临时仓库
           rm -rf .git
           echo "✅ SukiSU 注入完成"
 
-      # 4. 修改内核配置 (禁用三星安全项并开启 KSU)
+      # 4. 修改内核配置 (终极路径修复版)
       - name: 修改内核配置
         run: |
-          # 修改基础 defconfig
-          CONFIG_PATH="kernel_platform/common/arch/arm64/configs/gki_defconfig"
-          ./kernel_platform/common/scripts/config --file "$CONFIG_PATH" \
+          # 1. 修改基础 defconfig
+          CONFIG_PATH="$GITHUB_WORKSPACE/kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          CONFIG_TOOL="$GITHUB_WORKSPACE/kernel_platform/common/scripts/config"
+          
+          # 修改基础配置项
+          $CONFIG_TOOL --file "$CONFIG_PATH" \
             -e KSU \
             --set-str LOCALVERSION "-S25-Custom" \
             -d RKP -d KDP -d KNOX_NCM -d SECURITY_DEFEX -d INTEGRITY -d FIVE
           
-          # 同时修改 build.config 以防止 Bazel 重置配置 (S25 编译的关键)
-          CONF_FILE="kernel_platform/build.config.msm.sun"
+          # 2. 注入 build.config (使用绝对路径，彻底解决 scripts/config 找不到的问题)
+          # 三星 S25 Ultra 实际使用的配置文件通常是 build.config.msm.sun
+          CONF_FILE="$GITHUB_WORKSPACE/kernel_platform/build.config.msm.sun"
+          
           if [ -f "$CONF_FILE" ]; then
-            echo "PRE_DEFCONFIG_CMDS=\"\${SRCTREE}/scripts/config --file \${OUT_DIR}/arch/arm64/configs/\${DEFCONFIG} -e KSU --set-str LOCALVERSION '-S25-Custom' -d RKP -d KDP -d KNOX_NCM\"" >> "$CONF_FILE"
-            echo "✅ build.config 已注入"
+            # 使用绝对路径引用配置工具，并确保环境变量在编译时才被解析
+            echo "PRE_DEFCONFIG_CMDS=\"$CONFIG_TOOL --file \${OUT_DIR}/arch/arm64/configs/\${DEFCONFIG} -e KSU --set-str LOCALVERSION '-S25-Custom' -d RKP -d KDP -d KNOX_NCM\"" >> "$CONF_FILE"
+            echo "✅ build.config 已通过绝对路径注入"
           fi
 
       # 5. 执行内核编译
@@ -72,27 +76,27 @@ jobs:
           export SKIP_GIT_CHECK=1
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      # 6. 准备 AK3 并打捞产物
+      # 6. 提取产物并打包
       - name: 提取产物并打包
         run: |
           cd $GITHUB_WORKSPACE
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
           
-          echo "🔍 正在全域寻找编译生成的 Image..."
-          # 明确排除 AK3 目录，搜索生成的 Image
+          echo "🔍 正在寻找编译生成的 Image..."
+          # 明确在 out 目录下搜索 Image
           IMAGE_PATH=$(find out/ -name "Image" -type f | head -n 1)
           
           if [ -n "$IMAGE_PATH" ]; then
             echo "✅ 发现 Image: $IMAGE_PATH"
             cp -f "$IMAGE_PATH" AK3/
             
-            # 同时提取驱动模块 (.ko 文件)
+            # 提取驱动模块 (.ko 文件)
             mkdir -p AK3/modules
             find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
             
             cd AK3 && zip -r "../S25_Final_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
           else
-            echo "❌ 全域未找到 Image，编译可能未成功完成"
+            echo "❌ 未找到 Image，编译可能未成功"
             exit 1
           fi
 
