@@ -12,93 +12,88 @@ jobs:
       - name: Checkout 仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装必备编译依赖
+      - name: 安装编译依赖
         run: |
           sudo apt update -y
-          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix aria2
+          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix aria2 gcc-aarch64-linux-gnu
 
-      # 1.下载源码
-      - name: 下载源码安装包
+      - name: 下载内核源码包
         run: aria2c -x 16 -s 16 -k 1M -o kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
 
-      # 2.解压清理
-      - name: 根目录自动解压
+      - name: 解压清理压缩包
         run: |
           unzip -o -q kernel_platform.zip -d .
           rm -f kernel_platform.zip
 
-      # 关键修复点：确保 EOF 与内部脚本逻辑左对齐，且 run 块整体缩进正确
-      - name: 前置修改内核配置
+      - name: 内核原生工具关闭Knox/安全(Bazel官方兼容)
         run: |
-          GKI_DEF="kernel_platform/common/arch/arm64/configs/gki_defconfig"
-          sed -i '/CONFIG_.*KNOX/d;/CONFIG_.*RKP/d;/CONFIG_MODULE_SIG/d;/CONFIG_LOCKDOWN/d' "$GKI_DEF"
-          cat >> "$GKI_DEF" <<'EOF'
-          CONFIG_LOCALVERSION="-S25-DisableKnox"
-          CONFIG_KPM=y
-          CONFIG_UH=n
-          CONFIG_RKP=n
-          CONFIG_KDP=n
-          CONFIG_SECURITY_DEFEX=n
-          CONFIG_INTEGRITY=n
-          CONFIG_FIVE=n
-          CONFIG_KNOX_NCM=n
-          CONFIG_LOCALVERSION_AUTO=n
-          CONFIG_DEFAULT_SECURITY_DAC=n
-          CONFIG_DEFAULT_SELINUX=n
-          CONFIG_DEBUG_INFO=n
-          CONFIG_MODULE_SIG=n
-          CONFIG_MODULE_SIG_FORCE=n
-          CONFIG_LOCKDOWN_NONE=y
-          EOF
+          cd $GITHUB_WORKSPACE/kernel_platform/common
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- mrproper
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
+          ./scripts/config --set-str LOCALVERSION "-S25-DisableKnox"
+          ./scripts/config --enable KPM
+          ./scripts/config --disable UH
+          ./scripts/config --disable RKP
+          ./scripts/config --disable KDP
+          ./scripts/config --disable SECURITY_DEFEX
+          ./scripts/config --disable INTEGRITY
+          ./scripts/config --disable FIVE
+          ./scripts/config --disable KNOX_NCM
+          ./scripts/config --disable LOCALVERSION_AUTO
+          ./scripts/config --disable DEFAULT_SECURITY_DAC
+          ./scripts/config --disable DEFAULT_SELINUX
+          ./scripts/config --disable DEBUG_INFO
+          ./scripts/config --disable DEBUG_INFO_BTF
+          ./scripts/config --disable DEBUG_INFO_REDUCED
+          ./scripts/config --disable DEBUG_FS
+          ./scripts/config --disable GCOV
+          ./scripts/config --disable KASAN
+          ./scripts/config --disable UBSAN
+          ./scripts/config --disable KPROBES
+          ./scripts/config --disable MODULE_SIG
+          ./scripts/config --disable MODULE_SIG_FORCE
+          ./scripts/config --enable LOCKDOWN_NONE
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- savedefconfig
+          cp defconfig arch/arm64/configs/gki_defconfig
 
-          for d in kernel_platform/msm-kernel/arch/arm64/configs/*_gki_defconfig; do
-            if [ -f "$d" ]; then
-              sed -i '/CONFIG_SEC_KNOX/d;/CONFIG_SEC_RKP/d' "$d"
-              cat >> "$d" <<'EOF'
-          CONFIG_SEC_KNOX=n
-          CONFIG_SEC_RKP=n
-          CONFIG_QCOM_SECURE_BOOT=n
-          EOF
-            fi
-          done
-
-      - name: 在线注入 SukiSU
+      - name: 注入 SukiSU
         run: |
           cd kernel_platform/common
-          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU/main/kernel/install.sh | bash -s custom
 
-      - name: 源码拦截Knox编译
+      - name: 源码屏蔽Knox/RKP驱动编译
         run: |
           find kernel_platform/msm-kernel/drivers/samsung -name Kbuild -exec sed -i '/knox\|rkp/s/^obj-y/#obj-y/' {} +
 
-      - name: 清理旧编译残留
+      - name: 深度清理编译缓存
         run: |
           rm -rf kernel_platform/*/out out/
           find . -name ".config" -delete
 
-      - name: 全局赋权
+      - name: 全局权限修复
         run: sudo chmod -R 777 $GITHUB_WORKSPACE
 
-      - name: 执行内核编译脚本
+      - name: 启动三星Bazel内核编译
         run: |
           export SKIP_DEFCONFIG_VALIDATION=true
           export SKIP_GIT_CLEAN=1
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun
+          bash build_kernel_GKI.sh pa3q_hnnfc user sun
 
-      - name: 打包AnyKernel
+      - name: 打包AnyKernel刷机包
         run: |
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
           IMG=$(find . -name Image | head -n1)
-          if [ -n "$IMG" ]; then
+          if [ -n "$IMG" ];then
             cp "$IMG" AK3/
-            cd AK3 && zip -r ../S25_NoKnox.zip . -x ".git/*"
+            cd AK3 && zip -r ../S25_Ultra_NoKnox_SukiSU.zip . -x .git/*
           else
-            echo "Error: Image not found!"
+            echo "ERROR: 未找到内核Image镜像"
             exit 1
           fi
 
-      - name: 上传成品
+      - name: 上传成品内核
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Ultra_SukiSU_NoKnox_Kernel
-          path: S25_NoKnox.zip
+          name: S25_Ultra_SukiSU_去Knox内核
+          path: S25_Ultra_NoKnox_SukiSU.zip
+
