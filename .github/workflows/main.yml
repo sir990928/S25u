@@ -1,4 +1,4 @@
-name: S25_Ultra_KSU_KPM_Final_Fix
+name: 纯净环境测试编译
 on:
   push:
     branches: [ main ]
@@ -16,72 +16,55 @@ jobs:
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
 
-      - name: 权限修复
+      # 自动合并你上传的分片文件
+      - name: 合并所有分片 .part 文件
+        run: |
+          find . -name "*.part.aa" | while read part; do
+            original="${part%.part.aa}"
+            cat "$original".part.* > "$original"
+            rm -f "$original".part.*
+          done
+
+      # 赋权
+      - name: 暴力赋权
         run: |
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
-          chmod +x kernel_platform/common/scripts/config || true
 
-      - name: 注入 SukiSU 到 common
+      # 直接编译
+      - name: 执行内核编译 (纯净版)
         run: |
-          cd kernel_platform/common
-          git init
-          git config user.email "build@example.com"
-          git config user.name "Builder"
-          git add . && git commit -m "initial commit" || true
-          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
-          rm -rf .git
-          echo "✅ SukiSU 注入完成"
+          cd $GITHUB_WORKSPACE
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 修改内核配置
-        run: |
-          cd kernel_platform/common
-          CONFIG_PATH="arch/arm64/configs/gki_defconfig"
-          ./scripts/config --file "$CONFIG_PATH" -e KSU
-          ./scripts/config --file "$CONFIG_PATH" -e KSU_MANUAL_HOOK
-          ./scripts/config --file "$CONFIG_PATH" -e KPM
-          ./scripts/config --file "$CONFIG_PATH" -e KALLSYMS
-          ./scripts/config --file "$CONFIG_PATH" -e KALLSYMS_ALL
-          ./scripts/config --file "$CONFIG_PATH" --set-str LOCALVERSION "-S25-KSU-KPM"
-          
-          cd ../..
-          printf "build --kconfig_add=CONFIG_KSU=y\n" >> .bazelrc.local
-          printf "build --kconfig_add=CONFIG_KSU_MANUAL_HOOK=y\n" >> .bazelrc.local
-          printf "build --kconfig_add=CONFIG_KPM=y\n" >> .bazelrc.local
-          printf "build --kconfig_add=CONFIG_KALLSYMS=y\n" >> .bazelrc.local
-          printf "build --kconfig_add=CONFIG_KALLSYMS_ALL=y\n" >> .bazelrc.local
-          printf "build --define=SKIP_ABI_CHECK=1\n" >> .bazelrc.local
-          printf "build --kconfig_werror=false\n" >> .bazelrc.local
-          printf "build --nocheck_defconfig\n" >> .bazelrc.local
-          
-          echo "✅ 配置注入与 .bazelrc.local 生成完成"
-
-      - name: 执行内核编译
-        run: |
-          export SKIP_GIT_CHECK=1
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false --nocheck_defconfig --define=SKIP_ABI_CHECK=1
-
+      # 打捞 Image + dtbo + ko 一并打包
       - name: 提取产物并打包
         run: |
           cd $GITHUB_WORKSPACE
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          
-          echo "🔍 寻找生成的 Image..."
-          IMAGE_PATH=$(find out/ -name "Image" -type f | grep -v "internal" | head -n 1)
-          
-          if [ -z "$IMAGE_PATH" ]; then
-            echo "❌ 未找到生成的 Image"
-            exit 1
-          fi
-          
-          cp -f "$IMAGE_PATH" AK3/
-          mkdir -p AK3/modules
-          find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
-          cd AK3 && zip -r "../S25_Final_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
 
-      - name: 上传最终成品
+          echo "🔍 寻找 Image"
+          IMAGE_PATH=$(find . -name "Image" -type f | grep -v AK3 | head -n 1)
+          if [ -n "$IMAGE_PATH" ]; then
+            cp -f "$IMAGE_PATH" AK3/
+          fi
+
+          echo "🔍 寻找 dtbo.img"
+          DTBO_PATH=$(find . -name "dtbo.img" -type f | grep -v AK3 | head -n 1)
+          if [ -n "$DTBO_PATH" ]; then
+            cp -f "$DTBO_PATH" AK3/
+          fi
+
+          echo "🔍 寻找所有 .ko"
+          mkdir -p AK3/modules
+          find . -name "*.ko" -type f | grep -v AK3 | xargs -r cp -t AK3/modules/
+
+          cd AK3
+          zip -r "../S25_Test_Kernel.zip" . -x ".git/*"
+
+      - name: 上传成品
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Final_Kernel
-          path: S25_Final_Kernel_*.zip
+          name: S25_Test_Kernel
+          path: S25_Test_Kernel.zip
 
