@@ -56,10 +56,10 @@ jobs:
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- savedefconfig
           cp defconfig arch/arm64/configs/gki_defconfig
 
-      - name: 注入 SukiSU
+      - name: 注入 SukiSU-Ultra（修正完整链接）
         run: |
           cd kernel_platform/common
-          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU/main/kernel/install.sh | bash -s custom
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s
 
       - name: 源码屏蔽Knox/RKP驱动编译
         run: |
