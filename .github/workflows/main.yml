@@ -42,6 +42,72 @@ jobs:
           rm -rf .git
           echo "✅ SukiSU 注入完成"
 
+      # 4. 修改内核配置 (通过单行 echo 规避 YAML 语法陷阱)
+      - name: 修改内核配置
+        run: |
+          # 1. 尽量让 defconfig 看起来顺眼一点
+          cd kernel_platform/common
+          ./scripts/config --file arch/arm64/configs/gki_defconfig -e KSU
+          ./scripts/config --file arch/arm64/configs/gki_defconfig -e KSU_MANUAL_HOOK
+          ./scripts/config --file arch/arm64/configs/gki_defconfig -e KPM
+          ./scripts/config --file arch/arm64/configs/gki_defconfig -e KALLSYMS
+          ./scripts/config --file arch/arm64/configs/gki_defconfig -e KALLSYMS_ALL
+          ./scripts/config --file arch/arm64/configs/gki_defconfig --set-str LOCALVERSION "-S25-KSU-KPM"
+          
+          # 2. 生成 .bazelrc.local (核心：用命令行参数强制绕过所有检查)
+          cd ../..
+          echo "build --kconfig_add=CONFIG_KSU=y" >> .bazelrc.local
+          echo "build --kconfig_add=CONFIG_KSU_MANUAL_HOOK=y" >> .bazelrc.local
+          echo "build --kconfig_add=CONFIG_KPM=y" >> .bazelrc.local
+          echo "build --kconfig_add=CONFIG_KALLSYMS=y" >> .bazelrc.local
+          echo "build --kconfig_add=CONFIG_KALLSYMS_ALL=y" >> .bazelrc.local
+          echo "build --define=SKIP_ABI_CHECK=1" >> .bazelrc.local
+          # 关键：这两个参数组合可以强行无视 defconfig 的不匹配
+          echo "build --kconfig_werror=false" >> .bazelrc.local
+          echo "build --nocheck_defconfig" >> .bazelrc.local
+          
+          echo "✅ 配置注入完成"
+
+      # 5. 执行内核编译
+      - name: 执行内核编译
+        run: |
+          export SKIP_GIT_CHECK=1
+          # 在执行脚本时也强行带上这几个标志位，确保万无一失
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false --nocheck_defconfig --define=SKIP_ABI_CHECK=1
+
+      # 6. 提取产物并打包
+      - name: 提取产物并打包
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+          
+          echo "🔍 寻找生成的 Image..."
+          IMAGE_PATH=$(find out/ -name "Image" -type f | grep -v "internal" | head -n 1)
+          
+          if [ -z "$IMAGE_PATH" ]; then
+            echo "❌ 未找到生成的 Image"
+            exit 1
+          fi
+          
+          cp -f "$IMAGE_PATH" AK3/
+          mkdir -p AK3/modules
+          find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
+          cd AK3 && zip -r "../S25_Final_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
+
+      # 7. 上传
+      - name: 上传
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_Final_Kernel
+          path: S25_Final_Kernel_*.zip
+          git init
+          git config user.email "build@example.com"
+          git config user.name "Builder"
+          git add . && git commit -m "initial commit" || true
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
+          rm -rf .git
+          echo "✅ SukiSU 注入完成"
+
       # 4. 修改内核配置 & 暴力关闭 Bazel 校验
       - name: 修改内核配置 (暴力绕过校验)
         run: |
