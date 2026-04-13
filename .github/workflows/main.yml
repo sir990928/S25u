@@ -1,175 +1,65 @@
-name: 全新纯净内核编译_极致减负版
+name: 纯净环境测试编译
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout 仓库代码 (这是你的主料)
+      - name: Checkout 仓库代码
         uses: actions/checkout@v4
-
-      # 0. 极致空间清理
-      - name: 极致空间清理
-        run: |
-          echo "🧹 正在清理虚拟机，腾出 20GB+ 空间..."
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
 
       - name: 安装必备依赖
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
 
-      # 1. 下载工具链压缩包 (这是你的灶台)
-      - name: 下载编译工具链
-        run: wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
-
-      # 2. 核心步骤：解压工具链并“物理净身”
-      - name: 准备编译环境
+      # 1. 下载源码包
+      - name: 下载源码安装包
         run: |
-          echo "📦 正在解压工具链..."
+          wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
+
+      # 2. 合并解压
+      - name: 根目录自动合并解压
+        run: |
           unzip -o -q kernel_platform.zip -d .
           sudo rm -f kernel_platform.zip
-          
-          echo "🔥 关键操作：物理删除所有 Git 索引 (包括源码的和工具链的)"
-          # 删掉所有 .git，让脚本找不到任何仓库痕迹，断绝报错后路
-          find . -name ".git" -type d -exec rm -rf {} + || true
-          
-          # 暴力赋权与换行符修复
+
+      # 3. 暴力赋权 (不加 git init，看看原汁原味报错)
+      - name: 暴力赋权
+        run: |
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
 
-      # 3. 注入 Root 模块
-      - name: 嵌入 SukiSU 模块
-        run: |
-          cd kernel_platform/common
-          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
-
-      # 4. 修改 Defconfig 配置
-      - name: 修改 Defconfig 配置
-        run: |
-          ./kernel_platform/common/scripts/config --file ./kernel_platform/common/arch/arm64/configs/gki_defconfig \
-          --set-str LOCALVERSION "-S25" -e KPM \
-          -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM \
-          -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SELINUX \
-          -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED \
-          -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES
-
-      # 5. 执行内核编译 (现在是纯净的文件模式编译)
-      - name: 执行内核编译
+      # 4. 跳过 SU 注入和 Defconfig 修改，直接启动编译
+      - name: 执行内核编译 (纯净版)
         run: |
           cd $GITHUB_WORKSPACE
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      # 6. 提取产物并打包
+      # 5. 准备 AK3 并尝试打捞
       - name: 提取产物并打包
         run: |
           cd $GITHUB_WORKSPACE
-          # AnyKernel3 还是需要 git 拉取的，单独放一边
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
           
+          echo "🔍 正在寻找 Image..."
+          # 即使脚本报错，我们也去 bazel-bin 看看有没有遗留的 Image
           IMAGE_PATH=$(find . -name "Image" -not -path "./AK3/*" -type f | head -n 1)
+          
           if [ -n "$IMAGE_PATH" ]; then
+            echo "✅ 发现 Image: $IMAGE_PATH"
             cp -f "$IMAGE_PATH" AK3/
-            cd AK3 && zip -r "../S25_Final_Kernel_$(date +%m%d%H%M).zip" . -x ".git/*"
+            cd AK3 && zip -r "../S25_Test_Kernel.zip" . -x ".git/*"
           else
-            echo "❌ 完犊子，没搜到 Image，请检查 877 步后的 Bazel 日志！"
+            echo "❌ 全域未找到 Image"
             exit 1
           fi
 
-      - name: 上传成品
+      - name: 上传
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Final_Kernel
-          path: S25_Final_Kernel_*.zip
-        run: |
-          unzip -o -q kernel_platform.zip -d .
-          sudo rm -f kernel_platform.zip
-
-      # 3. 暴力赋权 & 初始化 Git (解决 PATHSPEC 报错的关键)
-      - name: 暴力赋权与初始化 Git
-        run: |
-          sudo chmod -R 777 $GITHUB_WORKSPACE
-          find . -name "*.sh" -exec dos2unix {} + || true
-          
-          # 必须初始化 Git，否则收尾脚本会崩溃
-          git init
-          git config --global user.name "feng"
-          git config --global user.email "feng@example.com"
-          git config --global safe.directory '*'
-          git add .
-          git commit -m "initial commit" --no-gpg-sign || true
-
-      # 4. 注入 Root 模块
-      - name: 嵌入 SukiSU 模块
-        run: |
-          cd kernel_platform/common
-          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
-
-      # 5. 修改 Defconfig 配置
-      - name: 修改 Defconfig 配置
-        run: |
-          ./kernel_platform/common/scripts/config --file ./kernel_platform/common/arch/arm64/configs/gki_defconfig \
-          --set-str LOCALVERSION "-S25" -e KPM \
-          -d UH -d RKP -d KDP -d SECURITY_DEFEX -d INTEGRITY -d FIVE -d KNOX_NCM \
-          -d LOCALVERSION_AUTO -d DEFAULT_SECURITY_DAC -d DEFAULT_SELINUX \
-          -d TRIM_UNUSED_KSYMS -d DEBUG_INFO -d DEBUG_INFO_BTF -d DEBUG_INFO_REDUCED \
-          -d DEBUG_FS -d GCOV -d KASAN -d UBSAN -d KPROBES
-
-      # 6. 再次固化变动 (解决注入 SU 导致的 Git 校验失败)
-      - name: 提交所有注入与配置改动
-        run: |
-          git add .
-          git commit -m "inject su and modify config" --no-gpg-sign || true
-
-      # 7. 执行内核编译
-      - name: 执行内核编译
-        run: |
-          cd $GITHUB_WORKSPACE
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun
-
-      # 8. 准备 AnyKernel3 并暴力打捞
-      - name: 提取产物并打包 AnyKernel3
-        run: |
-          cd $GITHUB_WORKSPACE
-          rm -rf AK3
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          
-          echo "🔍 正在全域打捞 Image..."
-          # 搜寻编译生成的 Image
-          IMAGE_PATH=$(find . -name "Image" -not -path "./AK3/*" -not -path "./.git/*" -type f | head -n 1)
-          DTBO_PATH=$(find . -name "dtbo.img" -not -path "./AK3/*" -not -path "./.git/*" -type f | head -n 1)
-          
-          if [ -z "$IMAGE_PATH" ]; then
-            echo "❌ 没找到 Image，可能还是磁盘或 Git 问题！"
-            exit 1
-          fi
-          
-          echo "✅ 捕获 Image: $IMAGE_PATH"
-          cp -f "$IMAGE_PATH" AK3/
-          
-          if [ -n "$DTBO_PATH" ]; then
-            echo "✅ 捕获 DTBO: $DTBO_PATH"
-            cp -f "$DTBO_PATH" AK3/dtbo.img
-          fi
-          
-          # 抓取模块
-          mkdir -p AK3/modules
-          find . -name "*.ko" -not -path "./AK3/*" -exec cp {} AK3/modules/ \;
-          
-          cd AK3
-          zip -r "../S25_Final_Kernel_$(date +%m%d%H%M).zip" . -x ".git/*"
-
-      # 9. 上传成品
-      - name: 上传成品
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_Final_Kernel
-          path: S25_Final_Kernel_*.zip
+          name: S25_Test_Kernel
+          path: S25_Test_Kernel.zip
