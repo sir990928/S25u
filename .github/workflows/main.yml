@@ -1,0 +1,114 @@
+name: 纯净基底_关Knox_内置SukiSU
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 仓库代码
+        uses: actions/checkout@v4
+
+      - name: 优化磁盘空间
+        run: |
+          # 释放 Ubuntu 镜像中不必要的占用，确保内核编译有足够空间
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm
+          sudo docker image prune -a -f
+
+      - name: 安装必备依赖
+        run: |
+          sudo apt update -y
+          # 必须包含 gcc-multilib 以解决主机工具链接时缺失 Scrt1.o 的报错
+          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix \
+          gcc-multilib g++-multilib libc6-dev-i386 libc6-dev
+
+      - name: 下载源码
+        run: |
+          wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
+
+      - name: 解压并修复权限
+        run: |
+          # 确保解压过程静默且强制覆盖
+          unzip -o -q kernel_platform.zip -d .
+          sudo rm -f kernel_platform.zip
+          sudo chmod -R 777 $GITHUB_WORKSPACE
+          find . -name "*.sh" -exec dos2unix {} + || true
+
+      - name: 深度清理内核树
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_platform
+          # 彻底移除旧缓存，防止 Bazel 报错脏树
+          rm -rf out/
+          find . -name "*.o" -delete
+          find . -name "*.cmd" -delete
+          make -C common mrproper || true
+          make -C msm-kernel mrproper || true
+
+      - name: 关闭 Knox/UH/FIVE 安全配置
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_platform/common
+          # 1. 注入版本后缀
+          ./scripts/config --set-str LOCALVERSION "-S25-Pure-NoKnox-SukiSU"
+          # 2. 核心安全项关闭 (针对 sun 平台补全了 UH/FIVE)
+          ./scripts/config --disable KNOX_NCM
+          ./scripts/config --disable RKP
+          ./scripts/config --disable KDP
+          ./scripts/config --disable UH
+          ./scripts/config --disable UH_RKP
+          ./scripts/config --disable FIVE
+          ./scripts/config --disable INTEGRITY_FIVE
+          ./scripts/config --disable SECURITY_DEFEX
+          ./scripts/config --disable SEC_RESTRICT_ROOTING
+          ./scripts/config --disable DEFAULT_SELINUX
+          ./scripts/config --disable MODULE_SIG
+          ./scripts/config --disable MODULE_SIG_FORCE
+
+      - name: 注入 SukiSU
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_platform/common
+          curl -Lsf https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash
+
+      - name: 物理屏蔽安全驱动 (源码级封杀)
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_platform/msm-kernel/drivers/samsung
+          # 针对三星私有驱动，直接从 Kbuild 入口注释掉
+          for key in knox uh rkp five defex; do
+            find . -type f \( -name "Kbuild" -o -name "Makefile" \) | \
+            xargs sed -i "/$key/s/^obj-/#obj-/" 2>/dev/null || true
+          done
+
+      - name: 执行官方脚本编译
+        run: |
+          cd $GITHUB_WORKSPACE
+          # 强制重编译，并使用 Thin LTO 节省内存防止 OOM
+          export RECOMPILE_KERNEL=1
+          export LTO=thin
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun 2>&1 | tee build_full.log
+
+      - name: 查找 Image 并打包
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git AK3
+          # 优先寻找 Bazel 输出目录下的镜像
+          IMAGE_PATH=$(find ./kernel_platform/out -name "Image" -type f 2>/dev/null | head -n 1)
+          if [ -z "$IMAGE_PATH" ]; then
+            IMAGE_PATH=$(find ./kernel_platform -name "Image" -type f | head -n 1)
+          fi
+          
+          if [ -f "$IMAGE_PATH" ]; then
+            cp "$IMAGE_PATH" AK3/
+            cd AK3
+            zip -r ../S25_NoKnox_SukiSU.zip . -x ".git/*"
+          else
+            echo "错误: 未找到 Image 文件"
+            exit 1
+          fi
+
+      - name: 上传内核
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_NoKnox_SukiSU
+          path: "*.zip"
