@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# 自动合并所有被拆分的大文件（aa/ab/ac... 自动合并回原文件）
+echo "🔧 合并大于90M的分片文件..."
+find . -name "*.part.aa" | while read part; do
+    original="${part%.part.aa}"
+    cat "$original".part.* > "$original"
+    rm -f "$original".part.*
+    echo "✅ 已合并：$original"
+done
+
 #1. target config
 BUILD_TARGET=$1
 export MODEL=$(echo $BUILD_TARGET | cut -d'_' -f1)
