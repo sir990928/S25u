@@ -8,7 +8,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout 仓库代码
+      - name: Checkout仓库代码
         uses: actions/checkout@v4
 
       - name: 安装必备依赖
