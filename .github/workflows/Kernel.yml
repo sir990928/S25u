@@ -11,6 +11,18 @@ jobs:
       - name: Checkout 仓库代码
         uses: actions/checkout@v4
 
+      # 🔥 必加：先清空间，否则编译到一半直接爆盘
+      - name: 极限释放磁盘空间
+        run: |
+          df -h
+          sudo swapoff -a
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/local/share/boost \
+                       /usr/share/dotnet /usr/games /var/lib/docker /opt/az \
+                       /usr/local/.ghcup "$AGENT_TOOLSDIRECTORY"
+          sudo apt clean
+          sudo docker system prune -a -f
+          df -h
+
       - name: 安装依赖
         run: |
           sudo apt update -y
@@ -27,13 +39,51 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           cd $GITHUB_WORKSPACE
 
-      # 🔥 核心：一边编译一边监听 .config，生成瞬间修改
+      # 编译 + 动态修改 .config
       - name: 编译内核 + 动态修改 .config
         run: |
-          # 后台监听，一旦 .config 生成立刻修改
           (
             while true; do
               CONFIG_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
+              if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
+                echo "✅ 捕获到 .config: $CONFIG_PATH"
+                sed -i 's/CONFIG_KNOX=y/CONFIG_KNOX=n/g' "$CONFIG_PATH"
+                sed -i 's/CONFIG_SECURITY_SELINUX=y/CONFIG_SECURITY_SELINUX=n/g' "$CONFIG_PATH"
+                sed -i 's/CONFIG_DM_VERITY=y/CONFIG_DM_VERITY=n/g' "$CONFIG_PATH"
+                sed -i 's/CONFIG_AVB=y/CONFIG_AVB=n/g' "$CONFIG_PATH"
+                echo "CONFIG_KPM=y" >> "$CONFIG_PATH"
+                echo "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" >> "$CONFIG_PATH"
+                break
+              fi
+              sleep 0.2
+            done
+          ) &
+
+          # 清理旧 bazel 缓存，避免空间占用
+          cd kernel_platform
+          tools/bazel clean --expunge || true
+          cd ..
+
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun
+
+      - name: 打包 AnyKernel3
+        run: |
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+
+          find . -name "Image" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
+          find . -name "dtbo.img" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
+
+          mkdir -p AK3/modules
+          find . -name "*.ko" -type f | grep -v AK3 | xargs -r cp -t AK3/modules/
+
+          cd AK3
+          zip -r "../S25_GKI_SukiSU.zip" . -x ".git/*"
+
+      - name: 上传内核
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_GKI_SukiSU
+          path: S25_GKI_SukiSU.zip
               if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
                 
                 echo "✅ 捕获到 .config: $CONFIG_PATH"
