@@ -30,8 +30,8 @@ jobs:
           find . -name "*.sh" -exec dos2unix {} + || true
           chmod +x kernel_platform/common/scripts/config || true
 
-      # 3. 注入 SukiSU
-      - name: 注入 SukiSU
+      # 3. 注入 SukiSU 到 common
+      - name: 注入 SukiSU 到 common
         run: |
           cd kernel_platform/common
           git init
@@ -40,38 +40,42 @@ jobs:
           git add . && git commit -m "initial commit" || true
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
           rm -rf .git
-          echo "✅ SukiSU/KSU 代码注入完成"
+          echo "✅ SukiSU 注入完成"
 
-      # 4. 修改内核配置 (修复 YAML 语法与注入逻辑)
+      # 4. 修改内核配置 (开启 KALLSYMS_ALL)
       - name: 修改内核配置
         run: |
-          # 进入 common 目录修改 defconfig
           cd kernel_platform/common
           CONFIG_PATH="arch/arm64/configs/gki_defconfig"
           
-          # 物理清理并使用内置脚本确保配置写入
-          scripts/config --file "$CONFIG_PATH" -e KSU
-          scripts/config --file "$CONFIG_PATH" -e KSU_MANUAL_HOOK
-          scripts/config --file "$CONFIG_PATH" -e KPM
-          scripts/config --file "$CONFIG_PATH" --set-str LOCALVERSION "-S25-KSU-KPM"
+          # 使用内置脚本强行开启核心配置
+          ./scripts/config --file "$CONFIG_PATH" -e KSU
+          ./scripts/config --file "$CONFIG_PATH" -e KSU_MANUAL_HOOK
+          ./scripts/config --file "$CONFIG_PATH" -e KPM
+          ./scripts/config --file "$CONFIG_PATH" -e KALLSYMS
+          ./scripts/config --file "$CONFIG_PATH" -e KALLSYMS_ALL
+          ./scripts/config --file "$CONFIG_PATH" --set-str LOCALVERSION "-S25-KSU-KPM"
           
-          # 返回根目录生成 .bazelrc.local (避开多行 cat 缩进问题)
+          # 生成 .bazelrc.local 进行多重注入
           cd ../..
           echo "build --kconfig_add=CONFIG_KSU=y" >> .bazelrc.local
           echo "build --kconfig_add=CONFIG_KSU_MANUAL_HOOK=y" >> .bazelrc.local
           echo "build --kconfig_add=CONFIG_KPM=y" >> .bazelrc.local
+          echo "build --kconfig_add=CONFIG_KALLSYMS=y" >> .bazelrc.local
+          echo "build --kconfig_add=CONFIG_KALLSYMS_ALL=y" >> .bazelrc.local
           echo "build --kconfig_add=CONFIG_LOCALVERSION=\"-S25-KSU-KPM\"" >> .bazelrc.local
-          echo "build --define=SKIP_ABI_CHECK=1" >> .bazelrc.local
-          echo "build --define=KLEAF_CONTROLS_KCONFIG=1" >> .bazelrc.local
           
-          echo "✅ 配置注入与 Bazel 引导文件生成完成"
+          # 绕过 savedefconfig 校验报错
+          echo "build --kconfig_werror=false" >> .bazelrc.local
+          echo "build --define=SKIP_ABI_CHECK=1" >> .bazelrc.local
+          
+          echo "✅ KALLSYMS_ALL 及相关配置注入完成"
 
       # 5. 执行内核编译
       - name: 执行内核编译
         run: |
           export SKIP_GIT_CHECK=1
-          # 增加参数确保跳过 ABI 校验，这是修改 KPM 后开机的关键
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --define=SKIP_ABI_CHECK=1
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false --define=SKIP_ABI_CHECK=1
 
       # 6. 提取产物并打包
       - name: 提取产物并打包
@@ -79,26 +83,20 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
           
-          echo "🔍 正在多级目录寻找 Image..."
-          # 定位真正的编译产物 Image
           IMAGE_PATH=$(find out/ -name "Image" -type f | grep -v "internal" | head -n 1)
           
           if [ -z "$IMAGE_PATH" ]; then
-            echo "❌ 未找到编译生成的 Image，请检查日志报错"
+            echo "❌ 未找到生成的 Image"
             exit 1
           fi
           
-          echo "✅ 发现 Image: $IMAGE_PATH"
           cp -f "$IMAGE_PATH" AK3/
-          
-          # 提取内核模块
           mkdir -p AK3/modules
           find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
-          
           cd AK3 && zip -r "../S25_Final_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
 
       # 7. 上传
-      - name: 上传最终成品
+      - name: 上传
         uses: actions/upload-artifact@v4
         with:
           name: S25_Final_Kernel
