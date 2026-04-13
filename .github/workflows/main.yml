@@ -31,7 +31,7 @@ jobs:
           # 确保配置工具具备执行权限
           chmod +x kernel_platform/common/scripts/config || true
 
-      # 3. 注入 SukiSU (修复 Git 环境报错)
+            # 3. 注入 SukiSU (手动 Hook 模式，不依赖 KPROBES)
       - name: 注入 SukiSU
         run: |
           cd kernel_platform/common
@@ -40,33 +40,36 @@ jobs:
           git config user.email "build@example.com"
           git config user.name "Builder"
           git add . && git commit -m "initial commit" || true
-          # 运行官方注入命令 (使用 builtin 模式)
+          
+          # 关键：使用 builtin 模式，并强制指定手动 Hook (Manual Hook)
+          # SukiSU 的 setup.sh 支持 builtin 参数，我们后续会手动修改代码注入 Hook 点
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
+          
           # 注入完成后清理临时仓库
           rm -rf .git
-          echo "✅ SukiSU 注入完成"
+          echo "✅ SukiSU 基础代码注入完成"
 
-            # 4. 修改内核配置 (强制开启 KPROBES 修复头文件缺失)
+      # 4. 修改内核配置 (开启 MANUAL_HOOK 避开 KPROBES 报错)
       - name: 修改内核配置
         run: |
           CONFIG_PATH="$GITHUB_WORKSPACE/kernel_platform/common/arch/arm64/configs/gki_defconfig"
           CONFIG_TOOL="$GITHUB_WORKSPACE/kernel_platform/common/scripts/config"
           
-          # 1. 在基础 defconfig 中开启必要项
+          # 1. 在基础 defconfig 中开启 MANUAL_HOOK，关闭 KPROBES 依赖
           $CONFIG_TOOL --file "$CONFIG_PATH" \
             -e KSU \
-            -e KPROBES \
-            -e KPROBE_EVENTS \
-            --set-str LOCALVERSION "-S25-Custom" \
+            -e KSU_MANUAL_HOOK \
+            -d KPROBES -d KPROBE_EVENTS \
+            --set-str LOCALVERSION "-S25-Manual" \
             -d RKP -d KDP -d KNOX_NCM -d SECURITY_DEFEX -d INTEGRITY -d FIVE
           
-          # 2. 注入 build.config (确保 Bazel 编译时也带上这些参数)
+          # 2. 注入 build.config (强制同步配置)
           CONF_FILE="$GITHUB_WORKSPACE/kernel_platform/build.config.msm.sun"
           if [ -f "$CONF_FILE" ]; then
-            # 增加 -e KPROBES -e KPROBE_EVENTS 确保头文件被包含
-            echo "PRE_DEFCONFIG_CMDS=\"$CONFIG_TOOL --file \${OUT_DIR}/arch/arm64/configs/\${DEFCONFIG} -e KSU -e KPROBES -e KPROBE_EVENTS --set-str LOCALVERSION '-S25-Custom' -d RKP -d KDP -d KNOX_NCM\"" >> "$CONF_FILE"
-            echo "✅ build.config 已注入 KPROBES 支持"
+            echo "PRE_DEFCONFIG_CMDS=\"$CONFIG_TOOL --file \${OUT_DIR}/arch/arm64/configs/\${DEFCONFIG} -e KSU -e KSU_MANUAL_HOOK -d KPROBES -d KPROBE_EVENTS --set-str LOCALVERSION '-S25-Manual' -d RKP -d KDP -d KNOX_NCM\"" >> "$CONF_FILE"
+            echo "✅ build.config 已切换为 Manual Hook 模式"
           fi
+
 
       # 5. 执行内核编译
       - name: 执行内核编译
