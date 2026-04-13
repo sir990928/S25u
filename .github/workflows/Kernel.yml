@@ -10,7 +10,6 @@ jobs:
     timeout-minutes: 360
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      COMMON_SRC: $GITHUB_WORKSPACE/kernel_platform/common
     steps:
       - name: Checkout 仓库代码
         uses: actions/checkout@v4
@@ -28,75 +27,60 @@ jobs:
           unzip -o -q kernel_platform.zip -d .
           rm -f kernel_platform.zip
 
-      - name: Git路径修复 + 清理无效软链接
+      - name: 校验核心目录存在
+        run: |
+          ls -la
+          [ -d "./kernel_platform/common" ] || exit 1
+
+      - name: Git路径修复+清理无效软链接
         run: |
           git config --global core.preferSymlinks false
-          find ./ -type l -name "*.h" -delete 2>/dev/null || true
-          rm -rf .git/modules/* 2>/dev/null || true
+          find ./kernel_platform -type l -name "*.h" -delete 2>/dev/null || true
 
-      - name: 通用common目录 修改关闭Knox配置
+      # 硬写真实路径：./kernel_platform/common 改配置（移除危险mrproper/savedefconfig）
+      - name: common目录关闭Knox配置
         run: |
-          cd $COMMON_SRC
-          pwd
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- mrproper
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
+          cd ./kernel_platform/common
           ./scripts/config --set-str LOCALVERSION "-S25-DisableKnox"
-          ./scripts/config --enable KPM
-          ./scripts/config --disable UH
-          ./scripts/config --disable RKP
-          ./scripts/config --disable KDP
-          ./scripts/config --disable SECURITY_DEFEX
-          ./scripts/config --disable INTEGRITY
-          ./scripts/config --disable FIVE
-          ./scripts/config --disable KNOX_NCM
-          ./scripts/config --disable LOCALVERSION_AUTO
-          ./scripts/config --disable DEFAULT_SECURITY_DAC
-          ./scripts/config --disable DEFAULT_SELINUX
-          ./scripts/config --disable DEBUG_INFO
-          ./scripts/config --disable DEBUG_INFO_BTF
-          ./scripts/config --disable DEBUG_INFO_REDUCED
-          ./scripts/config --disable DEBUG_FS
-          ./scripts/config --disable GCOV
-          ./scripts/config --disable KASAN
-          ./scripts/config --disable UBSAN
-          ./scripts/config --disable KPROBES
-          ./scripts/config --disable MODULE_SIG
-          ./scripts/config --disable MODULE_SIG_FORCE
-          ./scripts/config --enable LOCKDOWN_NONE
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- savedefconfig
-          cp defconfig arch/arm64/configs/gki_defconfig
+          ./scripts/config --disable KNOX_NCM --disable RKP --disable KDP
+          ./scripts/config --disable SECURITY_DEFEX --disable DEFAULT_SECURITY_DAC
+          ./scripts/config --disable DEFAULT_SELINUX --disable DEBUG_INFO
+          ./scripts/config --disable DEBUG_FS --disable KASAN --disable UBSAN
+          ./scripts/config --disable KPROBES --disable MODULE_SIG --disable MODULE_SIG_FORCE
+          ./scripts/config --enable KPM --enable LOCKDOWN_NONE
 
-      - name: 同common目录注入SukiSU-Ultra
+      # 同一路径 common 注入 SU 统一源码目录
+      - name: 同common注入SukiSU-Ultra
         run: |
-          cd $COMMON_SRC
-          pwd
+          cd ./kernel_platform/common
           curl -Lsf https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash
 
-      - name: 屏蔽Knox/RKP驱动
+      - name: 屏蔽Knox/RKP驱动Kbuild
         run: |
-          find kernel_platform/msm-kernel/drivers/samsung -name Kbuild -exec sed -i '/knox\|rkp/s/^obj-y/#obj-y/' {} +
+          find ./kernel_platform/msm-kernel/drivers/samsung -name Kbuild \
+          -exec sed -i '/knox\|rkp/s/^obj-y/#obj-y/' {} + 2>/dev/null || true
 
-      - name: Bazel深度清理
+      - name: Bazel深度清缓存
         run: |
-          cd $GITHUB_WORKSPACE/kernel_platform
+          cd ./kernel_platform
           bazel clean --expunge
           rm -rf out/ bazel-*/ 2>/dev/null || true
 
-      - name: 权限修复
-        run: sudo chmod -R 777 $GITHUB_WORKSPACE
+      - name: 全局权限修复
+        run: sudo chmod -R 777 .
 
-      - name: 启动Bazel编译
+      - name: 启动Bazel内核编译
         run: |
           export SKIP_DEFCONFIG_VALIDATION=true
           export SKIP_GIT_CLEAN=1
           export BAZEL_USE_SANDBOX=0
-          cd $GITHUB_WORKSPACE/kernel_platform
+          cd ./kernel_platform
           bash build_kernel_GKI.sh pa3q_hnnfc user sun --sandbox_debug
 
-      - name: 打包AnyKernel
+      - name: 打包AnyKernel刷机包
         run: |
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK
-          IMG=$(find $GITHUB_WORKSPACE/kernel_platform/out -name Image -type f | head -n1)
+          IMG=$(find ./kernel_platform/out -name Image -type f | head -n1)
           if [ -f "$IMG" ];then
             cp "$IMG" AK/
             cd AK && zip -r ../S25_Ultra_NoKnox_SukiSU.zip . -x .git/*
@@ -105,7 +89,7 @@ jobs:
             exit 1
           fi
 
-      - name: 上传成品
+      - name: 上传成品内核
         uses: actions/upload-artifact@v4
         with:
           name: S25_Ultra_SukiSU_去Knox内核
