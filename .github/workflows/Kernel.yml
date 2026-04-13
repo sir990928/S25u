@@ -1,4 +1,4 @@
-name: S25_Ultra_内核编译_极致禁用Knox完整版
+name: S25_Ultra_内核编译_路径终版
 on:
   push:
     branches: [ main ]
@@ -27,18 +27,19 @@ jobs:
           unzip -o -q kernel_platform.zip -d .
           rm -f kernel_platform.zip
 
-      - name: 校验核心目录存在
+      - name: 前置校验目录&脚本
         run: |
           ls -la
           [ -d "./kernel_platform/common" ] || exit 1
+          [ -f "./build_kernel_GKI.sh" ] || exit 1
 
       - name: Git路径修复+清理无效软链接
         run: |
           git config --global core.preferSymlinks false
           find ./kernel_platform -type l -name "*.h" -delete 2>/dev/null || true
 
-      # 硬写真实路径：./kernel_platform/common 改配置（移除危险mrproper/savedefconfig）
-      - name: common目录关闭Knox配置
+      # 通用源码common目录关闭Knox配置
+      - name: common目录修改内核配置
         run: |
           cd ./kernel_platform/common
           ./scripts/config --set-str LOCALVERSION "-S25-DisableKnox"
@@ -49,35 +50,36 @@ jobs:
           ./scripts/config --disable KPROBES --disable MODULE_SIG --disable MODULE_SIG_FORCE
           ./scripts/config --enable KPM --enable LOCKDOWN_NONE
 
-      # 同一路径 common 注入 SU 统一源码目录
-      - name: 同common注入SukiSU-Ultra
+      # 同common目录注入SU 统一源码路径
+      - name: common目录注入SukiSU-Ultra
         run: |
           cd ./kernel_platform/common
           curl -Lsf https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash
 
-      - name: 屏蔽Knox/RKP驱动Kbuild
+      - name: 屏蔽Knox/RKP驱动
         run: |
           find ./kernel_platform/msm-kernel/drivers/samsung -name Kbuild \
           -exec sed -i '/knox\|rkp/s/^obj-y/#obj-y/' {} + 2>/dev/null || true
 
-      - name: Bazel深度清缓存
+      - name: Bazel缓存清理
         run: |
           cd ./kernel_platform
-          bazel clean --expunge
+          bazel clean --expune || true
           rm -rf out/ bazel-*/ 2>/dev/null || true
 
       - name: 全局权限修复
         run: sudo chmod -R 777 .
 
-      - name: 启动Bazel内核编译
+      # 核心：停在【kernel_platform上级(根目录)】执行编译脚本
+      - name: 根目录启动编译脚本
         run: |
           export SKIP_DEFCONFIG_VALIDATION=true
           export SKIP_GIT_CLEAN=1
           export BAZEL_USE_SANDBOX=0
-          cd ./kernel_platform
-          bash build_kernel_GKI.sh pa3q_hnnfc user sun --sandbox_debug
+          chmod +x ./build_kernel_GKI.sh
+          ./build_kernel_GKI.sh pa3q_hnnfc user sun --sandbox_debug
 
-      - name: 打包AnyKernel刷机包
+      - name: 打包AnyKernel
         run: |
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK
           IMG=$(find ./kernel_platform/out -name Image -type f | head -n1)
@@ -85,11 +87,10 @@ jobs:
             cp "$IMG" AK/
             cd AK && zip -r ../S25_Ultra_NoKnox_SukiSU.zip . -x .git/*
           else
-            echo "未找到内核Image"
             exit 1
           fi
 
-      - name: 上传成品内核
+      - name: 上传成品
         uses: actions/upload-artifact@v4
         with:
           name: S25_Ultra_SukiSU_去Knox内核
