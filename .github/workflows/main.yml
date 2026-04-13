@@ -1,4 +1,4 @@
-name: S25 GKI 内置SukiSU + 去Knox安全
+name: S25 GKI 内置SukiSU + 禁用Knox安全
 on:
   push:
     branches: [ main ]
@@ -11,88 +11,47 @@ jobs:
       - name: Checkout 仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装必备依赖
+      - name: 安装依赖
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
 
-      - name: 赋权 + 换行符清理
+      - name: 权限与换行符处理
         run: |
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
 
-      # ==============================================
-      # 🔧 内置 SukiSU (Builtin 模式)
-      # ==============================================
-      - name: 内置集成 SukiSU Builtin
+      # 进入内核目录 → 内置 SukiSU → 返回根目录
+      - name: 内置 SukiSU (Builtin)
         run: |
-          cd $GITHUB_WORKSPACE
-          # 用官方脚本 内置集成
+          cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
-
-      # ==============================================
-      # 🔐 禁用 Knox / 三星安全 / dm-verity / AVB
-      # ==============================================
-      - name: 关闭三星 Knox & 安全机制
-        run: |
           cd $GITHUB_WORKSPACE
-          # 你的 defconfig 路径（按你实际路径改，这里是 common）
-          CONFIG=arch/arm64/configs/pa3q_chn_openx_defconfig
 
-          # 关闭 Knox
-          sed -i 's/CONFIG_KNOX=y/CONFIG_KNOX=n/g' $CONFIG
-          sed -i 's/CONFIG_KNOX_DEBUGFS=y/CONFIG_KNOX_DEBUGFS=n/g' $CONFIG
-          sed -i 's/CONFIG_SAMSUNG_KNOX=y/CONFIG_SAMSUNG_KNOX=n/g' $CONFIG
-
-          # 关闭 SE Linux（内置SU建议关闭）
-          sed -i 's/CONFIG_SECURITY_SELINUX=y/CONFIG_SECURITY_SELINUX=n/g' $CONFIG
-
-          # 关闭 验证/加密
-          sed -i 's/CONFIG_DM_VERITY=y/CONFIG_DM_VERITY=n/g' $CONFIG
-          sed -i 's/CONFIG_AVB=y/CONFIG_AVB=n/g' $CONFIG
-          sed -i 's/CONFIG_FS_ENCRYPTION=y/CONFIG_FS_ENCRYPTION=n/g' $CONFIG
-          sed -i 's/CONFIG_DEVICE_MAPPER=y/CONFIG_DEVICE_MAPPER=n/g' $CONFIG
-
-          # 关闭三星安全服务
-          sed -i 's/CONFIG_SAMSUNG_SECURITY=y/CONFIG_SAMSUNG_SECURITY=n/g' $CONFIG
-          sed -i 's/CONFIG_TRUSTONIC_TEE=y/CONFIG_TRUSTONIC_TEE=n/g' $CONFIG
-          sed -i 's/CONFIG_SCS=y/CONFIG_SCS=n/g' $CONFIG
-          sed -i 's/CONFIG_SEC_FMP=y/CONFIG_SEC_FMP=n/g' $CONFIG
-
-          # Builtin 必需打开
-          echo "CONFIG_KSU=y" >> $CONFIG
-          echo "CONFIG_KSU_ALLOW_SU_ROOT=y" >> $CONFIG
-          echo "CONFIG_KALLSYMS=y" >> $CONFIG
-          echo "CONFIG_KALLSYMS_ALL=y" >> $CONFIG
-
-      - name: 执行内核编译 (内置SukiSU)
+      # 编译 GKI 内核
+      - name: 开始编译内核
         run: |
-          cd $GITHUB_WORKSPACE
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 提取打包 AnyKernel3
+      # 打包 AnyKernel3
+      - name: 打包刷机包
         run: |
-          cd $GITHUB_WORKSPACE
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
 
-          echo "🔍 找 Image"
-          IMAGE_PATH=$(find . -name "Image" -type f | grep -v AK3 | head -n 1)
-          [ -n "$IMAGE_PATH" ] && cp -f "$IMAGE_PATH" AK3/
+          # 复制内核文件
+          find . -name "Image" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
+          find . -name "dtbo.img" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
 
-          echo "🔍 找 dtbo.img"
-          DTBO_PATH=$(find . -name "dtbo.img" -type f | grep -v AK3 | head -n 1)
-          [ -n "$DTBO_PATH" ] && cp -f "$DTBO_PATH" AK3/
-
-          echo "🔍 复制 .ko 模块"
+          # 复制模块
           mkdir -p AK3/modules
           find . -name "*.ko" -type f | grep -v AK3 | xargs -r cp -t AK3/modules/
 
           cd AK3
-          zip -r "../S25_Builtin_SukiSU_Kernel.zip" . -x ".git/*"
+          zip -r "../S25_GKI_SukiSU.zip" . -x ".git/*"
 
-      - name: 上传成品
+      - name: 上传内核
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Builtin_SukiSU
-          path: S25_Builtin_SukiSU_Kernel.zip
+          name: S25_GKI_SukiSU
+          path: S25_GKI_SukiSU.zip
 
