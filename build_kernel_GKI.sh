@@ -1,13 +1,16 @@
 #!/bin/bash
 
-# 自动合并所有被拆分的大文件（aa/ab/ac... 自动合并回原文件）
-echo "🔧 合并大于90M的分片文件..."
-find . -name "*.part.aa" | while read part; do
+# 1. 合并分片
+echo "🔧 合并分片文件..."
+find . -name "*.part.aa" | while read -r part; do
     original="${part%.part.aa}"
-    cat "$original".part.* > "$original"
+    cat "$original".part.a* > "$original"
     rm -f "$original".part.*
     echo "✅ 已合并：$original"
 done
+
+# 1.1. 暴力赋权 (关键：必须在合并后)
+chmod -R 777 ./kernel_platform/prebuilts
 
 #1. target config
 BUILD_TARGET=$1
