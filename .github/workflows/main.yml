@@ -46,27 +46,26 @@ jobs:
           rm -rf .git
           echo "✅ SukiSU 注入完成"
 
-      # 4. 修改内核配置 (终极路径修复版)
+            # 4. 修改内核配置 (强制开启 KPROBES 修复头文件缺失)
       - name: 修改内核配置
         run: |
-          # 1. 修改基础 defconfig
           CONFIG_PATH="$GITHUB_WORKSPACE/kernel_platform/common/arch/arm64/configs/gki_defconfig"
           CONFIG_TOOL="$GITHUB_WORKSPACE/kernel_platform/common/scripts/config"
           
-          # 修改基础配置项
+          # 1. 在基础 defconfig 中开启必要项
           $CONFIG_TOOL --file "$CONFIG_PATH" \
             -e KSU \
+            -e KPROBES \
+            -e KPROBE_EVENTS \
             --set-str LOCALVERSION "-S25-Custom" \
             -d RKP -d KDP -d KNOX_NCM -d SECURITY_DEFEX -d INTEGRITY -d FIVE
           
-          # 2. 注入 build.config (使用绝对路径，彻底解决 scripts/config 找不到的问题)
-          # 三星 S25 Ultra 实际使用的配置文件通常是 build.config.msm.sun
+          # 2. 注入 build.config (确保 Bazel 编译时也带上这些参数)
           CONF_FILE="$GITHUB_WORKSPACE/kernel_platform/build.config.msm.sun"
-          
           if [ -f "$CONF_FILE" ]; then
-            # 使用绝对路径引用配置工具，并确保环境变量在编译时才被解析
-            echo "PRE_DEFCONFIG_CMDS=\"$CONFIG_TOOL --file \${OUT_DIR}/arch/arm64/configs/\${DEFCONFIG} -e KSU --set-str LOCALVERSION '-S25-Custom' -d RKP -d KDP -d KNOX_NCM\"" >> "$CONF_FILE"
-            echo "✅ build.config 已通过绝对路径注入"
+            # 增加 -e KPROBES -e KPROBE_EVENTS 确保头文件被包含
+            echo "PRE_DEFCONFIG_CMDS=\"$CONFIG_TOOL --file \${OUT_DIR}/arch/arm64/configs/\${DEFCONFIG} -e KSU -e KPROBES -e KPROBE_EVENTS --set-str LOCALVERSION '-S25-Custom' -d RKP -d KDP -d KNOX_NCM\"" >> "$CONF_FILE"
+            echo "✅ build.config 已注入 KPROBES 支持"
           fi
 
       # 5. 执行内核编译
