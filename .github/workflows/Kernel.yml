@@ -1,0 +1,79 @@
+name: S25 GKI 内置SukiSU + 禁用Knox安全
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 仓库代码
+        uses: actions/checkout@v4
+
+      - name: 安装依赖
+        run: |
+          sudo apt update -y
+          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
+
+      - name: 权限与换行符处理
+        run: |
+          sudo chmod -R 777 $GITHUB_WORKSPACE
+          find . -name "*.sh" -exec dos2unix {} + || true
+
+      - name: 内置 SukiSU (Builtin)
+        run: |
+          cd kernel_platform/common
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
+          cd $GITHUB_WORKSPACE
+
+      # 🔥 核心：一边编译一边监听 .config，生成瞬间修改
+      - name: 编译内核 + 动态修改 .config
+        run: |
+          # 后台监听，一旦 .config 生成立刻修改
+          (
+            while true; do
+              CONFIG_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
+              if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
+                
+                echo "✅ 捕获到 .config: $CONFIG_PATH"
+                
+                # 禁用安全
+                sed -i 's/CONFIG_KNOX=y/CONFIG_KNOX=n/g' "$CONFIG_PATH"
+                sed -i 's/CONFIG_SECURITY_SELINUX=y/CONFIG_SECURITY_SELINUX=n/g' "$CONFIG_PATH"
+                sed -i 's/CONFIG_DM_VERITY=y/CONFIG_DM_VERITY=n/g' "$CONFIG_PATH"
+                sed -i 's/CONFIG_AVB=y/CONFIG_AVB=n/g' "$CONFIG_PATH"
+                
+                # 开启 KPM
+                echo "CONFIG_KPM=y" >> "$CONFIG_PATH"
+                
+                # 自定义内核名称
+                echo "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" >> "$CONFIG_PATH"
+                
+                break
+              fi
+              sleep 0.2
+            done
+          ) &
+          
+          # 直接运行你的正常编译，不等待、不prepare
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun
+
+      - name: 打包 AnyKernel3
+        run: |
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+
+          find . -name "Image" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
+          find . -name "dtbo.img" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
+
+          mkdir -p AK3/modules
+          find . -name "*.ko" -type f | grep -v AK3 | xargs -r cp -t AK3/modules/
+
+          cd AK3
+          zip -r "../S25_GKI_SukiSU.zip" . -x ".git/*"
+
+      - name: 上传内核
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_GKI_SukiSU
+          path: S25_GKI_SukiSU.zip
