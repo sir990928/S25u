@@ -30,7 +30,7 @@ jobs:
           find . -name "*.sh" -exec dos2unix {} + || true
           chmod +x kernel_platform/common/scripts/config || true
 
-      # 3. 注入 SukiSU (包含 KSU 核心代码)
+      # 3. 注入 SukiSU
       - name: 注入 SukiSU
         run: |
           cd kernel_platform/common
@@ -38,55 +38,43 @@ jobs:
           git config user.email "build@example.com"
           git config user.name "Builder"
           git add . && git commit -m "initial commit" || true
-          # 使用 builtin 模式，这是在内核源码中开启 CONFIG_KSU 的前提
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
           rm -rf .git
           echo "✅ SukiSU/KSU 代码注入完成"
 
-      # 4. 核心步骤：通过 Bazel 注入开启 KSU 和 KPM
-      - name: 修改内核配置 (开启 KSU & KPM)
+      # 4. 修改内核配置 (开启 KSU & KPM)
+      - name: 修改内核配置
         run: |
           CONFIG_PATH="kernel_platform/common/arch/arm64/configs/gki_defconfig"
           
-          # 1. 物理删除旧的冲突项，确保新配置生效
+          # 物理删除旧冲突项
           sed -i '/CONFIG_KSU/d' "$CONFIG_PATH"
           sed -i '/CONFIG_KPM/d' "$CONFIG_PATH"
           sed -i '/CONFIG_LOCALVERSION/d' "$CONFIG_PATH"
           
-          # 2. 将配置写入 gki_defconfig
-          cat <<EOF >> "$CONFIG_PATH"
-          # KSU 核心配置
-          CONFIG_KSU=y
-          CONFIG_KSU_MANUAL_HOOK=y
-          CONFIG_LOCALVERSION="-S25-KSU-KPM"
-          
-          # 开启 KPM
-          CONFIG_KPM=y
-          
-          # 骁龙 8G3 平台建议关闭 KPROBES 以使用 Manual Hook，减少 Panic
-          # CONFIG_KPROBES is not set
-          EOF
+          # 写入新配置到 defconfig
+          {
+            echo "CONFIG_KSU=y"
+            echo "CONFIG_KSU_MANUAL_HOOK=y"
+            echo "CONFIG_LOCALVERSION=\"-S25-KSU-KPM\""
+            echo "CONFIG_KPM=y"
+          } >> "$CONFIG_PATH"
 
-          # 3. 创建 .bazelrc.local (Bazel 强力注入工具)
-          # 在三星最新的 Bazel 构建中，命令行注入比改文件更可靠
+          # 创建 .bazelrc.local (强制注入)
           cat <<EOF > .bazelrc.local
           build --kconfig_add=CONFIG_KSU=y
           build --kconfig_add=CONFIG_KSU_MANUAL_HOOK=y
           build --kconfig_add=CONFIG_KPM=y
           build --kconfig_add=CONFIG_LOCALVERSION="-S25-KSU-KPM"
-          
-          # 开启 KSU 和 KPM 必然会改变内核符号表 (ABI)
-          # 不加这一行，编译会在最后阶段因为 ABI 校验失败而报错
           build --define=SKIP_ABI_CHECK=1
           EOF
           
-          echo "✅ KSU 与 KPM 配置已注入"
+          echo "✅ 配置注入完成"
 
       # 5. 执行内核编译
       - name: 执行内核编译
         run: |
           export SKIP_GIT_CHECK=1
-          # 这里的参数会透传给 Bazel，确保 ABI 校验被跳过
           bash build_kernel_GKI.sh pa3q_chn_openx user sun --define=SKIP_ABI_CHECK=1
 
       # 6. 提取产物并打包
@@ -95,22 +83,21 @@ jobs:
           cd $GITHUB_WORKSPACE
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
           
-          echo "🔍 寻找生成的 Image..."
+          echo "🔍 寻找 Image..."
           IMAGE_PATH=$(find out/ -name "Image" -type f | grep -v "internal" | head -n 1)
           
-          if [ -n "$IMAGE_PATH" ]; then
-            echo "✅ 发现 Image: $IMAGE_PATH"
-            cp -f "$IMAGE_PATH" AK3/
-            
-            # 拷贝驱动模块 (.ko)
-            mkdir -p AK3/modules
-            find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
-            
-            cd AK3 && zip -r "../S25_KSU_KPM_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
-          else
-            echo "❌ 未找到 Image，请检查编译日志"
+          if [ -z "$IMAGE_PATH" ]; then
+            echo "❌ 未找到 Image"
             exit 1
           fi
+          
+          echo "✅ 发现 Image: $IMAGE_PATH"
+          cp -f "$IMAGE_PATH" AK3/
+          
+          mkdir -p AK3/modules
+          find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
+          
+          cd AK3 && zip -r "../S25_KSU_KPM_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
 
       # 7. 上传
       - name: 上传
@@ -118,77 +105,3 @@ jobs:
         with:
           name: S25_KSU_KPM_Kernel
           path: S25_KSU_KPM_Kernel_*.zip
-          cd kernel_platform/common
-          # 初始化临时 Git 仓库，防止 setup.sh 报 pathspec 错误
-          git init
-          git config user.email "build@example.com"
-          git config user.name "Builder"
-          git add . && git commit -m "initial commit" || true
-          
-          # 关键：使用 builtin 模式，并强制指定手动 Hook (Manual Hook)
-          # SukiSU 的 setup.sh 支持 builtin 参数，我们后续会手动修改代码注入 Hook 点
-          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
-          
-          # 注入完成后清理临时仓库
-          rm -rf .git
-          echo "✅ SukiSU 基础代码注入完成"
-
-      # 4. 修改内核配置 (开启 MANUAL_HOOK 避开 KPROBES 报错)
-      - name: 修改内核配置
-        run: |
-          CONFIG_PATH="$GITHUB_WORKSPACE/kernel_platform/common/arch/arm64/configs/gki_defconfig"
-          CONFIG_TOOL="$GITHUB_WORKSPACE/kernel_platform/common/scripts/config"
-          
-          # 1. 在基础 defconfig 中开启 MANUAL_HOOK，关闭 KPROBES 依赖
-          $CONFIG_TOOL --file "$CONFIG_PATH" \
-            -e KSU \
-            -e KSU_MANUAL_HOOK \
-            -d KPROBES -d KPROBE_EVENTS \
-            --set-str LOCALVERSION "-S25-Manual" \
-            -d RKP -d KDP -d KNOX_NCM -d SECURITY_DEFEX -d INTEGRITY -d FIVE
-          
-          # 2. 注入 build.config (强制同步配置)
-          CONF_FILE="$GITHUB_WORKSPACE/kernel_platform/build.config.msm.sun"
-          if [ -f "$CONF_FILE" ]; then
-            echo "PRE_DEFCONFIG_CMDS=\"$CONFIG_TOOL --file \${OUT_DIR}/arch/arm64/configs/\${DEFCONFIG} -e KSU -e KSU_MANUAL_HOOK -d KPROBES -d KPROBE_EVENTS --set-str LOCALVERSION '-S25-Manual' -d RKP -d KDP -d KNOX_NCM\"" >> "$CONF_FILE"
-            echo "✅ build.config 已切换为 Manual Hook 模式"
-          fi
-
-
-      # 5. 执行内核编译
-      - name: 执行内核编译
-        run: |
-          # 确保在根目录执行，并设置跳过 Git 检查的环境变量
-          export SKIP_GIT_CHECK=1
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun
-
-      # 6. 提取产物并打包
-      - name: 提取产物并打包
-        run: |
-          cd $GITHUB_WORKSPACE
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          
-          echo "🔍 正在寻找编译生成的 Image..."
-          # 明确在 out 目录下搜索 Image
-          IMAGE_PATH=$(find out/ -name "Image" -type f | head -n 1)
-          
-          if [ -n "$IMAGE_PATH" ]; then
-            echo "✅ 发现 Image: $IMAGE_PATH"
-            cp -f "$IMAGE_PATH" AK3/
-            
-            # 提取驱动模块 (.ko 文件)
-            mkdir -p AK3/modules
-            find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
-            
-            cd AK3 && zip -r "../S25_Final_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
-          else
-            echo "❌ 未找到 Image，编译可能未成功"
-            exit 1
-          fi
-
-      # 7. 上传最终成品
-      - name: 上传
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_Final_Kernel
-          path: S25_Final_Kernel_*.zip
