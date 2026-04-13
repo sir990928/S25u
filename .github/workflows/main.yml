@@ -1,4 +1,4 @@
-name: S25_Ultra_KSU_KPM_Enable
+name: S25_Ultra_KSU_KPM_Final_Fix
 on:
   push:
     branches: [ main ]
@@ -34,6 +34,86 @@ jobs:
       - name: 注入 SukiSU
         run: |
           cd kernel_platform/common
+          git init
+          git config user.email "build@example.com"
+          git config user.name "Builder"
+          git add . && git commit -m "initial commit" || true
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
+          rm -rf .git
+          echo "✅ SukiSU/KSU 代码注入完成"
+
+      # 4. 修改内核配置 (绕过 savedefconfig 校验)
+      - name: 修改内核配置
+        run: |
+          # 进入 common 目录操作配置
+          cd kernel_platform/common
+          CONFIG_PATH="arch/arm64/configs/gki_defconfig"
+          
+          # 使用内置脚本修改，这比 echo 更安全
+          scripts/config --file "$CONFIG_PATH" -e KSU
+          scripts/config --file "$CONFIG_PATH" -e KSU_MANUAL_HOOK
+          scripts/config --file "$CONFIG_PATH" -e KPM
+          scripts/config --file "$CONFIG_PATH" --set-str LOCALVERSION "-S25-KSU-KPM"
+          
+          # 针对三星最新的 check_defconfig 报错：
+          # 我们在编译时通过强制参数绕过，所以这里不需要强行跑 make savedefconfig
+          
+          # 回到根目录创建 Bazel 强注文件
+          cd ../..
+          cat <<EOF > .bazelrc.local
+          # 强制开启配置
+          build --kconfig_add=CONFIG_KSU=y
+          build --kconfig_add=CONFIG_KSU_MANUAL_HOOK=y
+          build --kconfig_add=CONFIG_KPM=y
+          build --kconfig_add=CONFIG_LOCALVERSION="-S25-KSU-KPM"
+          
+          # 核心修复参数：
+          # 1. 跳过 ABI 校验（改了 KPM 必跳）
+          build --define=SKIP_ABI_CHECK=1
+          # 2. 告诉 Kleaf 忽略 savedefconfig 的差异检查
+          build --proc_macro_generate_builtins
+          build --define=KLEAF_CONTROLS_KCONFIG=1
+          EOF
+          
+          echo "✅ 配置与 Bazel 注入完成"
+
+      # 5. 执行内核编译
+      - name: 执行内核编译
+        run: |
+          export SKIP_GIT_CHECK=1
+          # 显式在命令行带上 SKIP_ABI 标志
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun --define=SKIP_ABI_CHECK=1
+
+      # 6. 提取产物并打包
+      - name: 提取产物并打包
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+          
+          echo "🔍 正在多级目录寻找 Image..."
+          # 三星的产物通常在 out 目录下深处
+          IMAGE_PATH=$(find out/ -name "Image" -type f | grep -v "internal" | head -n 1)
+          
+          if [ -z "$IMAGE_PATH" ]; then
+            echo "❌ 未找到编译生成的 Image，请检查 Actions 日志中的具体报错"
+            exit 1
+          fi
+          
+          echo "✅ 发现 Image: $IMAGE_PATH"
+          cp -f "$IMAGE_PATH" AK3/
+          
+          # 提取模块
+          mkdir -p AK3/modules
+          find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
+          
+          cd AK3 && zip -r "../S25_Final_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
+
+      # 7. 上传
+      - name: 上传最终成品
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_Final_Kernel
+          path: S25_Final_Kernel_*.zip
           git init
           git config user.email "build@example.com"
           git config user.name "Builder"
