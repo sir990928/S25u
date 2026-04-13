@@ -42,13 +42,11 @@ jobs:
           rm -rf .git
           echo "✅ SukiSU 注入完成"
 
-      # 4. 修改内核配置 (彻底解决第 103 行报错隐患)
+      # 4. 修改内核配置 (采用管道符号保护所有特殊字符)
       - name: 修改内核配置
         run: |
           cd kernel_platform/common
           CONFIG_PATH="arch/arm64/configs/gki_defconfig"
-          
-          # 使用脚本修改 defconfig 源码
           ./scripts/config --file "$CONFIG_PATH" -e KSU
           ./scripts/config --file "$CONFIG_PATH" -e KSU_MANUAL_HOOK
           ./scripts/config --file "$CONFIG_PATH" -e KPM
@@ -56,17 +54,15 @@ jobs:
           ./scripts/config --file "$CONFIG_PATH" -e KALLSYMS_ALL
           ./scripts/config --file "$CONFIG_PATH" --set-str LOCALVERSION "-S25-KSU-KPM"
           
-          # 切换回根目录生成 .bazelrc.local
-          # 采用最简单的 echo 方式，避免引号嵌套导致的 YAML 语法错误
           cd ../..
-          echo build --kconfig_add=CONFIG_KSU=y >> .bazelrc.local
-          echo build --kconfig_add=CONFIG_KSU_MANUAL_HOOK=y >> .bazelrc.local
-          echo build --kconfig_add=CONFIG_KPM=y >> .bazelrc.local
-          echo build --kconfig_add=CONFIG_KALLSYMS=y >> .bazelrc.local
-          echo build --kconfig_add=CONFIG_KALLSYMS_ALL=y >> .bazelrc.local
-          echo build --define=SKIP_ABI_CHECK=1 >> .bazelrc.local
-          echo build --kconfig_werror=false >> .bazelrc.local
-          echo build --nocheck_defconfig >> .bazelrc.local
+          printf "build --kconfig_add=CONFIG_KSU=y\n" >> .bazelrc.local
+          printf "build --kconfig_add=CONFIG_KSU_MANUAL_HOOK=y\n" >> .bazelrc.local
+          printf "build --kconfig_add=CONFIG_KPM=y\n" >> .bazelrc.local
+          printf "build --kconfig_add=CONFIG_KALLSYMS=y\n" >> .bazelrc.local
+          printf "build --kconfig_add=CONFIG_KALLSYMS_ALL=y\n" >> .bazelrc.local
+          printf "build --define=SKIP_ABI_CHECK=1\n" >> .bazelrc.local
+          printf "build --kconfig_werror=false\n" >> .bazelrc.local
+          printf "build --nocheck_defconfig\n" >> .bazelrc.local
           
           echo "✅ 配置注入与 .bazelrc.local 生成完成"
 
@@ -74,7 +70,6 @@ jobs:
       - name: 执行内核编译
         run: |
           export SKIP_GIT_CHECK=1
-          # 同时在命令行传入关键的 flag 确保万无一失
           bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false --nocheck_defconfig --define=SKIP_ABI_CHECK=1
 
       # 6. 提取产物并打包
@@ -98,213 +93,6 @@ jobs:
 
       # 7. 上传
       - name: 上传最终成品
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_Final_Kernel
-          path: S25_Final_Kernel_*.zip
-          git init
-          git config user.email "build@example.com"
-          git config user.name "Builder"
-          git add . && git commit -m "initial commit" || true
-          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
-          rm -rf .git
-          echo "✅ SukiSU 注入完成"
-
-      # 4. 修改内核配置 (通过单行 echo 规避 YAML 语法陷阱)
-      - name: 修改内核配置
-        run: |
-          # 1. 尽量让 defconfig 看起来顺眼一点
-          cd kernel_platform/common
-          ./scripts/config --file arch/arm64/configs/gki_defconfig -e KSU
-          ./scripts/config --file arch/arm64/configs/gki_defconfig -e KSU_MANUAL_HOOK
-          ./scripts/config --file arch/arm64/configs/gki_defconfig -e KPM
-          ./scripts/config --file arch/arm64/configs/gki_defconfig -e KALLSYMS
-          ./scripts/config --file arch/arm64/configs/gki_defconfig -e KALLSYMS_ALL
-          ./scripts/config --file arch/arm64/configs/gki_defconfig --set-str LOCALVERSION "-S25-KSU-KPM"
-          
-          # 2. 生成 .bazelrc.local (核心：用命令行参数强制绕过所有检查)
-          cd ../..
-          echo "build --kconfig_add=CONFIG_KSU=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KSU_MANUAL_HOOK=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KPM=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KALLSYMS=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KALLSYMS_ALL=y" >> .bazelrc.local
-          echo "build --define=SKIP_ABI_CHECK=1" >> .bazelrc.local
-          # 关键：这两个参数组合可以强行无视 defconfig 的不匹配
-          echo "build --kconfig_werror=false" >> .bazelrc.local
-          echo "build --nocheck_defconfig" >> .bazelrc.local
-          
-          echo "✅ 配置注入完成"
-
-      # 5. 执行内核编译
-      - name: 执行内核编译
-        run: |
-          export SKIP_GIT_CHECK=1
-          # 在执行脚本时也强行带上这几个标志位，确保万无一失
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false --nocheck_defconfig --define=SKIP_ABI_CHECK=1
-
-      # 6. 提取产物并打包
-      - name: 提取产物并打包
-        run: |
-          cd $GITHUB_WORKSPACE
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          
-          echo "🔍 寻找生成的 Image..."
-          IMAGE_PATH=$(find out/ -name "Image" -type f | grep -v "internal" | head -n 1)
-          
-          if [ -z "$IMAGE_PATH" ]; then
-            echo "❌ 未找到生成的 Image"
-            exit 1
-          fi
-          
-          cp -f "$IMAGE_PATH" AK3/
-          mkdir -p AK3/modules
-          find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
-          cd AK3 && zip -r "../S25_Final_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
-
-      # 7. 上传
-      - name: 上传
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_Final_Kernel
-          path: S25_Final_Kernel_*.zip
-          git init
-          git config user.email "build@example.com"
-          git config user.name "Builder"
-          git add . && git commit -m "initial commit" || true
-          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
-          rm -rf .git
-          echo "✅ SukiSU 注入完成"
-
-      # 4. 修改内核配置 & 暴力关闭 Bazel 校验
-      - name: 修改内核配置 (暴力绕过校验)
-        run: |
-          cd kernel_platform/common
-          CONFIG_PATH="arch/arm64/configs/gki_defconfig"
-          
-          # 1. 强行修改源码文件
-          ./scripts/config --file "$CONFIG_PATH" -e KSU
-          ./scripts/config --file "$CONFIG_PATH" -e KSU_MANUAL_HOOK
-          ./scripts/config --file "$CONFIG_PATH" -e KPM
-          ./scripts/config --file "$CONFIG_PATH" -e KALLSYMS
-          ./scripts/config --file "$CONFIG_PATH" -e KALLSYMS_ALL
-          ./scripts/config --file "$CONFIG_PATH" --set-str LOCALVERSION "-S25-KSU-KPM"
-          
-          # 2. 【核心大招】暴力修改 common 目录下的 BUILD.bazel，强行让校验永远返回 True
-          # 这会导致 check_defconfig 步骤失效，从而绕过报错
-          cd "$GITHUB_WORKSPACE/kernel_platform/common"
-          sed -i 's/check_defconfig = True/check_defconfig = False/g' BUILD.bazel || true
-          
-          # 3. 生成 .bazelrc.local
-          cd ../..
-          echo "build --kconfig_add=CONFIG_KSU=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KSU_MANUAL_HOOK=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KPM=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KALLSYMS=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KALLSYMS_ALL=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_LOCALVERSION=\"-S25-KSU-KPM\"" >> .bazelrc.local
-          
-          # 增加强力注入 Flag
-          echo "build --define=SKIP_ABI_CHECK=1" >> .bazelrc.local
-          echo "build --kconfig_werror=false" >> .bazelrc.local
-          
-          echo "✅ 配置注入完成，Bazel 校验已暴力关闭"
-
-      # 5. 执行内核编译
-      - name: 执行内核编译
-        run: |
-          export SKIP_GIT_CHECK=1
-          # 同时传入禁止报错参数
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false --define=SKIP_ABI_CHECK=1
-
-      # 6. 提取产物并打包
-      - name: 提取产物并打包
-        run: |
-          cd $GITHUB_WORKSPACE
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          
-          echo "🔍 正在寻找最终生成的 Image..."
-          IMAGE_PATH=$(find out/ -name "Image" -type f | grep -v "internal" | head -n 1)
-          
-          if [ -z "$IMAGE_PATH" ]; then
-            echo "❌ 未找到 Image，请检查日志查看是否出现了 C 语言编译错误"
-            exit 1
-          fi
-          
-          cp -f "$IMAGE_PATH" AK3/
-          mkdir -p AK3/modules
-          find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
-          cd AK3 && zip -r "../S25_Final_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
-
-      # 7. 上传
-      - name: 上传
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_Final_Kernel
-          path: S25_Final_Kernel_*.zip
-          git init
-          git config user.email "build@example.com"
-          git config user.name "Builder"
-          git add . && git commit -m "initial commit" || true
-          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
-          rm -rf .git
-          echo "✅ SukiSU 注入完成"
-
-      # 4. 修改内核配置 (开启 KALLSYMS_ALL)
-      - name: 修改内核配置
-        run: |
-          cd kernel_platform/common
-          CONFIG_PATH="arch/arm64/configs/gki_defconfig"
-          
-          # 使用内置脚本强行开启核心配置
-          ./scripts/config --file "$CONFIG_PATH" -e KSU
-          ./scripts/config --file "$CONFIG_PATH" -e KSU_MANUAL_HOOK
-          ./scripts/config --file "$CONFIG_PATH" -e KPM
-          ./scripts/config --file "$CONFIG_PATH" -e KALLSYMS
-          ./scripts/config --file "$CONFIG_PATH" -e KALLSYMS_ALL
-          ./scripts/config --file "$CONFIG_PATH" --set-str LOCALVERSION "-S25-KSU-KPM"
-          
-          # 生成 .bazelrc.local 进行多重注入
-          cd ../..
-          echo "build --kconfig_add=CONFIG_KSU=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KSU_MANUAL_HOOK=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KPM=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KALLSYMS=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_KALLSYMS_ALL=y" >> .bazelrc.local
-          echo "build --kconfig_add=CONFIG_LOCALVERSION=\"-S25-KSU-KPM\"" >> .bazelrc.local
-          
-          # 绕过 savedefconfig 校验报错
-          echo "build --kconfig_werror=false" >> .bazelrc.local
-          echo "build --define=SKIP_ABI_CHECK=1" >> .bazelrc.local
-          
-          echo "✅ KALLSYMS_ALL 及相关配置注入完成"
-
-      # 5. 执行内核编译
-      - name: 执行内核编译
-        run: |
-          export SKIP_GIT_CHECK=1
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false --define=SKIP_ABI_CHECK=1
-
-      # 6. 提取产物并打包
-      - name: 提取产物并打包
-        run: |
-          cd $GITHUB_WORKSPACE
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          
-          IMAGE_PATH=$(find out/ -name "Image" -type f | grep -v "internal" | head -n 1)
-          
-          if [ -z "$IMAGE_PATH" ]; then
-            echo "❌ 未找到生成的 Image"
-            exit 1
-          fi
-          
-          cp -f "$IMAGE_PATH" AK3/
-          mkdir -p AK3/modules
-          find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
-          cd AK3 && zip -r "../S25_Final_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
-
-      # 7. 上传
-      - name: 上传
         uses: actions/upload-artifact@v4
         with:
           name: S25_Final_Kernel
