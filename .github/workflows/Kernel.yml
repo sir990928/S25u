@@ -8,6 +8,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      # 固定通用源码 common 目录
+      COMMON_SRC: $GITHUB_WORKSPACE/kernel_platform/common
     steps:
       - name: Checkout 仓库代码
         uses: actions/checkout@v4
@@ -25,15 +29,17 @@ jobs:
           unzip -o -q kernel_platform.zip -d .
           rm -f kernel_platform.zip
 
-      - name: 修复Git路径配置&清理无效软链接（规避pathspec报错）
+      - name: Git路径修复 + 清理无效软链接
         run: |
           git config --global core.preferSymlinks false
           find ./ -type l -name "*.h" -delete 2>/dev/null || true
           rm -rf .git/modules/* 2>/dev/null || true
 
-      - name: 内核原生工具关闭Knox/安全(Bazel官方兼容)
+      # ========== 1、通用common目录修改内核配置 ==========
+      - name: 通用源码common目录 修改关闭Knox配置
         run: |
-          cd $GITHUB_WORKSPACE/kernel_platform/common
+          cd $COMMON_SRC
+          pwd
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- mrproper
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
           ./scripts/config --set-str LOCALVERSION "-S25-DisableKnox"
@@ -62,16 +68,18 @@ jobs:
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- savedefconfig
           cp defconfig arch/arm64/configs/gki_defconfig
 
-      - name: 注入 SukiSU-Ultra（完整正确链接）
+      # ========== 2、同一个common通用源码目录注入SU ==========
+      - name: 同common通用源码 注入SukiSU-Ultra
         run: |
-          cd kernel_platform/common
-          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s
+          cd $COMMON_SRC
+          pwd
+          curl -Lsf https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash
 
-      - name: 源码屏蔽Knox/RKP驱动编译
+      - name: 源码屏蔽Knox/RKP驱动
         run: |
           find kernel_platform/msm-kernel/drivers/samsung -name Kbuild -exec sed -i '/knox\|rkp/s/^obj-y/#obj-y/' {} +
 
-      - name: Bazel深度缓存清理 修复沙盒编译
+      - name: Bazel深度清理缓存
         run: |
           cd $GITHUB_WORKSPACE/kernel_platform
           bazel clean --expunge
@@ -80,7 +88,7 @@ jobs:
       - name: 全局权限修复
         run: sudo chmod -R 777 $GITHUB_WORKSPACE
 
-      - name: 启动三星Bazel内核编译（开启沙盒调试）
+      - name: 启动Bazel内核编译
         run: |
           export SKIP_DEFCONFIG_VALIDATION=true
           export SKIP_GIT_CLEAN=1
