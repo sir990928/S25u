@@ -1,4 +1,5 @@
-name: S25_Ultra_内核编译_纯净无脏树终版
+name: 纯净基底_关Knox_内置SukiSU
+
 on:
   push:
     branches: [ main ]
@@ -7,104 +8,99 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout 仓库代码
         uses: actions/checkout@v4
-        with:
-          clean: true  # 强制检出洁净工作区
 
-      - name: 安装编译依赖
+      - name: 安装必备依赖
         run: |
           sudo apt update -y
-          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix aria2 gcc-aarch64-linux-gnu
+          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
 
-      - name: 下载内核源码包
-        run: aria2c -x 16 -s 16 -k 1M -o kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
-
-      - name: 解压清理压缩包
+      - name: 下载源码安装包
         run: |
-          rm -rf kernel_platform/  # 先删旧目录防残留
+          wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
+
+      - name: 解压源码
+        run: |
           unzip -o -q kernel_platform.zip -d .
-          rm -f kernel_platform.zip
+          sudo rm -f kernel_platform.zip
 
-      - name: 前置校验目录&脚本
+      - name: 赋权
         run: |
-          ls -la
-          [ -d "./kernel_platform/common" ] || exit 1
-          [ -f "./build_kernel_GKI.sh" ] || exit 1
+          sudo chmod -R 777 $GITHUB_WORKSPACE
+          find . -name "*.sh" -exec dos2unix {} + || true
 
-      # ========== 关键新增：全局深度洁净 根治脏树 ==========
-      - name: 内核源码彻底净化 mrproper
+      - name: 深度清理内核树
         run: |
-          cd kernel_platform/common
-          make mrproper || true
-          cd ../msm-kernel
-          make mrproper || true
-          cd ..
-          # Bazel暴力清缓存
-          bazel clean --expunge
-          rm -rf bazel-*/ out/ fastbuild-*/
-          # 清理残留配置/生成文件
-          find . -name ".config" -o -name "auto.conf*" -delete 2>/dev/null || true
+          cd $GITHUB_WORKSPACE/kernel_platform
+          rm -rf out/
+          find . -name "*.o" -delete
+          find . -name "*.cmd" -delete
+          make -C common mrproper || true
+          make -C msm-kernel mrproper || true
 
-      - name: Git路径修复+清理无效软链接
+      - name: 关闭 Knox/UH/FIVE 安全配置
         run: |
-          git config --global core.preferSymlinks false
-          find ./kernel_platform -type l -delete 2>/dev/null || true
+          cd $GITHUB_WORKSPACE/kernel_platform/common
+          ./scripts/config --set-str LOCALVERSION "-S25-Pure-NoKnox-SukiSU"
+          ./scripts/config --disable KNOX_NCM
+          ./scripts/config --disable RKP
+          ./scripts/config --disable KDP
+          ./scripts/config --disable UH
+          ./scripts/config --disable UH_RKP
+          ./scripts/config --disable FIVE
+          ./scripts/config --disable INTEGRITY_FIVE
+          ./scripts/config --disable SECURITY_DEFEX
+          ./scripts/config --disable SEC_RESTRICT_ROOTING
+          ./scripts/config --disable DEFAULT_SELINUX
+          ./scripts/config --disable MODULE_SIG
+          ./scripts/config --disable MODULE_SIG_FORCE
 
-      # 关闭Knox配置
-      - name: common目录修改内核配置
+      - name: 注入 SukiSU
         run: |
-          cd ./kernel_platform/common
-          ./scripts/config --set-str LOCALVERSION "-S25-DisableKnox"
-          ./scripts/config --disable KNOX_NCM --disable RKP --disable KDP
-          ./scripts/config --disable SECURITY_DEFEX --disable DEFAULT_SECURITY_DAC
-          ./scripts/config --disable DEFAULT_SELINUX --disable DEBUG_INFO
-          ./scripts/config --disable DEBUG_FS --disable KASAN --disable UBSAN
-          ./scripts/config --disable KPROBES --disable MODULE_SIG --disable MODULE_SIG_FORCE
-          ./scripts/config --enable KPM --enable LOCKDOWN_NONE
-
-      # 注入SukiSU
-      - name: common目录注入SukiSU-Ultra
-        run: |
-          cd ./kernel_platform/common
+          cd $GITHUB_WORKSPACE/kernel_platform/common
           curl -Lsf https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash
 
-      # 屏蔽Knox驱动
-      - name: 屏蔽Knox/RKP驱动
+      - name: 物理屏蔽安全驱动 (Knox/UH/FIVE)
         run: |
-          find ./kernel_platform/msm-kernel/drivers/samsung -name Kbuild \
-          -exec sed -i '/knox\|rkp/s/^obj-y/#obj-y/' {} + 2>/dev/null || true
+          cd $GITHUB_WORKSPACE/kernel_platform/msm-kernel/drivers/samsung
+          # 修复了 KEYWORDS 的语法，确保循环在 shell 中正确执行
+          for key in knox uh rkp five defex; do
+            find . -type f \( -name "Kbuild" -o -name "Makefile" \) | \
+            xargs sed -i "/$key/s/^obj-/#obj-/" 2>/dev/null || true
+          done
 
-      - name: 全局权限修复
-        run: sudo chmod -R 777 .
-
-      # ========== 移除SKIP_GIT_CLEAN污染变量 ==========
-      - name: 根目录启动编译脚本
+      - name: 执行编译
         run: |
-          export SKIP_DEFCONFIG_VALIDATION=true
-          export BAZEL_USE_SANDBOX=0
-          # 删掉 export SKIP_GIT_CLEAN=1 不再跳过清理
-          chmod +x ./build_kernel_GKI.sh
-          ./build_kernel_GKI.sh pa3q_hnnfc user sun --sandbox_debug --verbose_failures
+          cd $GITHUB_WORKSPACE
+          export RECOMPILE_KERNEL=1
+          export LTO=thin
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun 2>&1 | tee build_full.log
 
-      - name: 打包AnyKernel
+      - name: 查找 Image 并打包
         run: |
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK
-          IMG=$(find ./kernel_platform/out -name Image -type f | head -n1)
-          if [ -f "$IMG" ];then
-            cp "$IMG" AK/
-            cd AK && zip -r ../S25_Ultra_NoKnox_SukiSU.zip . -x .git/*
+          cd $GITHUB_WORKSPACE
+          # 克隆 AnyKernel3 并在当前目录操作
+          git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git AK3
+          # 修正了查找逻辑，确保不会找错目录
+          IMAGE_PATH=$(find ./kernel_platform/out -type f -name "Image" 2>/dev/null | head -n 1)
+          if [ -z "$IMAGE_PATH" ]; then
+            IMAGE_PATH=$(find . -type f -name "Image" ! -path "./AK3/*" | head -n 1)
+          fi
+          
+          if [ -n "$IMAGE_PATH" ]; then
+            cp "$IMAGE_PATH" AK3/
+            cd AK3
+            zip -r ../S25_NoKnox_SukiSU.zip . -x ".git/*"
           else
+            echo "未找到编译生成的 Image 文件"
             exit 1
           fi
 
-      - name: 上传成品
+      - name: 上传内核
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Ultra_SukiSU_去Knox内核
-          path: S25_Ultra_NoKnox_SukiSU.zip
+          name: S25_NoKnox_SukiSU
+          path: "*.zip"
 
