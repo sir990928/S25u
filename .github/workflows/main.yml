@@ -1,4 +1,4 @@
-name: S25_Ultra_Kernel_Final_Fix
+name: S25_Ultra_KSU_KPM_Enable
 on:
   push:
     branches: [ main ]
@@ -11,29 +11,113 @@ jobs:
       - name: Checkout 仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装必备
+      - name: 安装必备依赖
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
 
-      # 1. 下载源码包
+      # 1. 下载并解压源码
       - name: 下载源码安装包
         run: |
           wget -O kernel_platform.zip https://github.com/sir990928/S25ultra/releases/download/1/kernel_platform.zip
           unzip -o -q kernel_platform.zip -d .
           sudo rm -f kernel_platform.zip
 
-      # 2. 权限修复
-      - name: 暴力赋权 & 修复换行符
+      # 2. 预处理：权限修复
+      - name: 权限修复
         run: |
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
-          # 确保配置工具具备执行权限
           chmod +x kernel_platform/common/scripts/config || true
 
-            # 3. 注入 SukiSU (手动 Hook 模式，不依赖 KPROBES)
+      # 3. 注入 SukiSU (包含 KSU 核心代码)
       - name: 注入 SukiSU
         run: |
+          cd kernel_platform/common
+          git init
+          git config user.email "build@example.com"
+          git config user.name "Builder"
+          git add . && git commit -m "initial commit" || true
+          # 使用 builtin 模式，这是在内核源码中开启 CONFIG_KSU 的前提
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
+          rm -rf .git
+          echo "✅ SukiSU/KSU 代码注入完成"
+
+      # 4. 核心步骤：通过 Bazel 注入开启 KSU 和 KPM
+      - name: 修改内核配置 (开启 KSU & KPM)
+        run: |
+          CONFIG_PATH="kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          
+          # 1. 物理删除旧的冲突项，确保新配置生效
+          sed -i '/CONFIG_KSU/d' "$CONFIG_PATH"
+          sed -i '/CONFIG_KPM/d' "$CONFIG_PATH"
+          sed -i '/CONFIG_LOCALVERSION/d' "$CONFIG_PATH"
+          
+          # 2. 将配置写入 gki_defconfig
+          cat <<EOF >> "$CONFIG_PATH"
+          # KSU 核心配置
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+          CONFIG_LOCALVERSION="-S25-KSU-KPM"
+          
+          # 开启 KPM
+          CONFIG_KPM=y
+          
+          # 骁龙 8G3 平台建议关闭 KPROBES 以使用 Manual Hook，减少 Panic
+          # CONFIG_KPROBES is not set
+          EOF
+
+          # 3. 创建 .bazelrc.local (Bazel 强力注入工具)
+          # 在三星最新的 Bazel 构建中，命令行注入比改文件更可靠
+          cat <<EOF > .bazelrc.local
+          build --kconfig_add=CONFIG_KSU=y
+          build --kconfig_add=CONFIG_KSU_MANUAL_HOOK=y
+          build --kconfig_add=CONFIG_KPM=y
+          build --kconfig_add=CONFIG_LOCALVERSION="-S25-KSU-KPM"
+          
+          # 开启 KSU 和 KPM 必然会改变内核符号表 (ABI)
+          # 不加这一行，编译会在最后阶段因为 ABI 校验失败而报错
+          build --define=SKIP_ABI_CHECK=1
+          EOF
+          
+          echo "✅ KSU 与 KPM 配置已注入"
+
+      # 5. 执行内核编译
+      - name: 执行内核编译
+        run: |
+          export SKIP_GIT_CHECK=1
+          # 这里的参数会透传给 Bazel，确保 ABI 校验被跳过
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun --define=SKIP_ABI_CHECK=1
+
+      # 6. 提取产物并打包
+      - name: 提取产物并打包
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+          
+          echo "🔍 寻找生成的 Image..."
+          IMAGE_PATH=$(find out/ -name "Image" -type f | grep -v "internal" | head -n 1)
+          
+          if [ -n "$IMAGE_PATH" ]; then
+            echo "✅ 发现 Image: $IMAGE_PATH"
+            cp -f "$IMAGE_PATH" AK3/
+            
+            # 拷贝驱动模块 (.ko)
+            mkdir -p AK3/modules
+            find out/ -name "*.ko" -type f -exec cp {} AK3/modules/ \;
+            
+            cd AK3 && zip -r "../S25_KSU_KPM_Kernel_$(date +%Y%m%d).zip" . -x ".git/*"
+          else
+            echo "❌ 未找到 Image，请检查编译日志"
+            exit 1
+          fi
+
+      # 7. 上传
+      - name: 上传
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_KSU_KPM_Kernel
+          path: S25_KSU_KPM_Kernel_*.zip
           cd kernel_platform/common
           # 初始化临时 Git 仓库，防止 setup.sh 报 pathspec 错误
           git init
