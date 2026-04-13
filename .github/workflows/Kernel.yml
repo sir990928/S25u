@@ -10,7 +10,6 @@ jobs:
     timeout-minutes: 360
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      # 固定通用源码 common 目录
       COMMON_SRC: $GITHUB_WORKSPACE/kernel_platform/common
     steps:
       - name: Checkout 仓库代码
@@ -35,8 +34,7 @@ jobs:
           find ./ -type l -name "*.h" -delete 2>/dev/null || true
           rm -rf .git/modules/* 2>/dev/null || true
 
-      # ========== 1、通用common目录修改内核配置 ==========
-      - name: 通用源码common目录 修改关闭Knox配置
+      - name: 通用common目录 修改关闭Knox配置
         run: |
           cd $COMMON_SRC
           pwd
@@ -68,27 +66,26 @@ jobs:
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- savedefconfig
           cp defconfig arch/arm64/configs/gki_defconfig
 
-      # ========== 2、同一个common通用源码目录注入SU ==========
-      - name: 同common通用源码 注入SukiSU-Ultra
+      - name: 同common目录注入SukiSU-Ultra
         run: |
           cd $COMMON_SRC
           pwd
           curl -Lsf https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash
 
-      - name: 源码屏蔽Knox/RKP驱动
+      - name: 屏蔽Knox/RKP驱动
         run: |
           find kernel_platform/msm-kernel/drivers/samsung -name Kbuild -exec sed -i '/knox\|rkp/s/^obj-y/#obj-y/' {} +
 
-      - name: Bazel深度清理缓存
+      - name: Bazel深度清理
         run: |
           cd $GITHUB_WORKSPACE/kernel_platform
           bazel clean --expunge
           rm -rf out/ bazel-*/ 2>/dev/null || true
 
-      - name: 全局权限修复
+      - name: 权限修复
         run: sudo chmod -R 777 $GITHUB_WORKSPACE
 
-      - name: 启动Bazel内核编译
+      - name: 启动Bazel编译
         run: |
           export SKIP_DEFCONFIG_VALIDATION=true
           export SKIP_GIT_CLEAN=1
@@ -96,7 +93,7 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel_platform
           bash build_kernel_GKI.sh pa3q_hnnfc user sun --sandbox_debug
 
-      - name: 打包AnyKernel刷机包
+      - name: 打包AnyKernel
         run: |
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK
           IMG=$(find $GITHUB_WORKSPACE/kernel_platform/out -name Image -type f | head -n1)
@@ -104,11 +101,11 @@ jobs:
             cp "$IMG" AK/
             cd AK && zip -r ../S25_Ultra_NoKnox_SukiSU.zip . -x .git/*
           else
-            echo "ERROR: 未找到内核Image镜像"
+            echo "未找到内核Image"
             exit 1
           fi
 
-      - name: 上传成品内核
+      - name: 上传成品
         uses: actions/upload-artifact@v4
         with:
           name: S25_Ultra_SukiSU_去Knox内核
