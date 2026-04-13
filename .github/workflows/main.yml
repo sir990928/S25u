@@ -16,28 +16,16 @@ jobs:
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
 
-      # 自动合并你上传的分片文件
-      - name: 合并所有分片 .part 文件
-        run: |
-          find . -name "*.part.aa" | while read part; do
-            original="${part%.part.aa}"
-            cat "$original".part.* > "$original"
-            rm -f "$original".part.*
-          done
-
-      # 赋权
       - name: 暴力赋权
         run: |
           sudo chmod -R 777 $GITHUB_WORKSPACE
           find . -name "*.sh" -exec dos2unix {} + || true
 
-      # 直接编译
       - name: 执行内核编译 (纯净版)
         run: |
           cd $GITHUB_WORKSPACE
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      # 打捞 Image + dtbo + ko 一并打包
       - name: 提取产物并打包
         run: |
           cd $GITHUB_WORKSPACE
@@ -55,7 +43,7 @@ jobs:
             cp -f "$DTBO_PATH" AK3/
           fi
 
-          echo "🔍 寻找所有 .ko"
+          echo "🔍 寻找所有 .ko 模块"
           mkdir -p AK3/modules
           find . -name "*.ko" -type f | grep -v AK3 | xargs -r cp -t AK3/modules/
 
