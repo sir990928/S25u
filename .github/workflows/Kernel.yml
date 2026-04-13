@@ -25,6 +25,12 @@ jobs:
           unzip -o -q kernel_platform.zip -d .
           rm -f kernel_platform.zip
 
+      - name: 修复Git路径配置&清理无效软链接（规避pathspec报错）
+        run: |
+          git config --global core.preferSymlinks false
+          find ./ -type l -name "*.h" -delete 2>/dev/null || true
+          rm -rf .git/modules/* 2>/dev/null || true
+
       - name: 内核原生工具关闭Knox/安全(Bazel官方兼容)
         run: |
           cd $GITHUB_WORKSPACE/kernel_platform/common
@@ -56,7 +62,7 @@ jobs:
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- savedefconfig
           cp defconfig arch/arm64/configs/gki_defconfig
 
-      - name: 注入 SukiSU-Ultra（修正完整链接）
+      - name: 注入 SukiSU-Ultra（完整正确链接）
         run: |
           cd kernel_platform/common
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s
@@ -65,27 +71,30 @@ jobs:
         run: |
           find kernel_platform/msm-kernel/drivers/samsung -name Kbuild -exec sed -i '/knox\|rkp/s/^obj-y/#obj-y/' {} +
 
-      - name: 深度清理编译缓存
+      - name: Bazel深度缓存清理 修复沙盒编译
         run: |
-          rm -rf kernel_platform/*/out out/
-          find . -name ".config" -delete
+          cd $GITHUB_WORKSPACE/kernel_platform
+          bazel clean --expunge
+          rm -rf out/ bazel-*/ 2>/dev/null || true
 
       - name: 全局权限修复
         run: sudo chmod -R 777 $GITHUB_WORKSPACE
 
-      - name: 启动三星Bazel内核编译
+      - name: 启动三星Bazel内核编译（开启沙盒调试）
         run: |
           export SKIP_DEFCONFIG_VALIDATION=true
           export SKIP_GIT_CLEAN=1
-          bash build_kernel_GKI.sh pa3q_hnnfc user sun
+          export BAZEL_USE_SANDBOX=0
+          cd $GITHUB_WORKSPACE/kernel_platform
+          bash build_kernel_GKI.sh pa3q_hnnfc user sun --sandbox_debug
 
       - name: 打包AnyKernel刷机包
         run: |
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          IMG=$(find . -name Image | head -n1)
-          if [ -n "$IMG" ];then
-            cp "$IMG" AK3/
-            cd AK3 && zip -r ../S25_Ultra_NoKnox_SukiSU.zip . -x .git/*
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK
+          IMG=$(find $GITHUB_WORKSPACE/kernel_platform/out -name Image -type f | head -n1)
+          if [ -f "$IMG" ];then
+            cp "$IMG" AK/
+            cd AK && zip -r ../S25_Ultra_NoKnox_SukiSU.zip . -x .git/*
           else
             echo "ERROR: 未找到内核Image镜像"
             exit 1
