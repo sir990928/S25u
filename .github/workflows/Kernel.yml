@@ -27,82 +27,78 @@ jobs:
           unzip -o -q kernel_platform.zip -d .
           rm -f kernel_platform.zip
 
-      # ========== 关键：此处shell完全标准无缩进语法修复 ==========
+      # 关键修复点：确保 EOF 与内部脚本逻辑左对齐，且 run 块整体缩进正确
       - name: 前置修改内核配置
         run: |
           GKI_DEF="kernel_platform/common/arch/arm64/configs/gki_defconfig"
           sed -i '/CONFIG_.*KNOX/d;/CONFIG_.*RKP/d;/CONFIG_MODULE_SIG/d;/CONFIG_LOCKDOWN/d' "$GKI_DEF"
-cat >> "$GKI_DEF" <<'EOF'
-CONFIG_LOCALVERSION="-S25-DisableKnox"
-CONFIG_KPM=y
-CONFIG_UH=n
-CONFIG_RKP=n
-CONFIG_KDP=n
-CONFIG_SECURITY_DEFEX=n
-CONFIG_INTEGRITY=n
-CONFIG_FIVE=n
-CONFIG_KNOX_NCM=n
-CONFIG_LOCALVERSION_AUTO=n
-CONFIG_DEFAULT_SECURITY_DAC=n
-CONFIG_DEFAULT_SELINUX=n
-CONFIG_DEBUG_INFO=n
-CONFIG_MODULE_SIG=n
-CONFIG_MODULE_SIG_FORCE=n
-CONFIG_LOCKDOWN_NONE=y
-EOF
+          cat >> "$GKI_DEF" <<'EOF'
+          CONFIG_LOCALVERSION="-S25-DisableKnox"
+          CONFIG_KPM=y
+          CONFIG_UH=n
+          CONFIG_RKP=n
+          CONFIG_KDP=n
+          CONFIG_SECURITY_DEFEX=n
+          CONFIG_INTEGRITY=n
+          CONFIG_FIVE=n
+          CONFIG_KNOX_NCM=n
+          CONFIG_LOCALVERSION_AUTO=n
+          CONFIG_DEFAULT_SECURITY_DAC=n
+          CONFIG_DEFAULT_SELINUX=n
+          CONFIG_DEBUG_INFO=n
+          CONFIG_MODULE_SIG=n
+          CONFIG_MODULE_SIG_FORCE=n
+          CONFIG_LOCKDOWN_NONE=y
+          EOF
 
-          for d in kernel_platform/msm-kernel/arch/arm64/configs/*_gki_defconfig;do
-          [ -f "$d" ]||continue
-          sed -i '/CONFIG_SEC_KNOX/d;/CONFIG_SEC_RKP/d' "$d"
-cat >> "$d" <<'EOF'
-CONFIG_SEC_KNOX=n
-CONFIG_SEC_RKP=n
-CONFIG_QCOM_SECURE_BOOT=n
-EOF
+          for d in kernel_platform/msm-kernel/arch/arm64/configs/*_gki_defconfig; do
+            if [ -f "$d" ]; then
+              sed -i '/CONFIG_SEC_KNOX/d;/CONFIG_SEC_RKP/d' "$d"
+              cat >> "$d" <<'EOF'
+          CONFIG_SEC_KNOX=n
+          CONFIG_SEC_RKP=n
+          CONFIG_QCOM_SECURE_BOOT=n
+          EOF
+            fi
           done
 
-      # 注入苏基苏
       - name: 在线注入 SukiSU
         run: |
           cd kernel_platform/common
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
 
-      # 屏蔽Knox驱动
       - name: 源码拦截Knox编译
-        run: find kernel_platform/msm-kernel/drivers/samsung -name Kbuild -exec sed -i '/knox\|rkp/s/^obj-y/#obj-y/' {} \;
+        run: |
+          find kernel_platform/msm-kernel/drivers/samsung -name Kbuild -exec sed -i '/knox\|rkp/s/^obj-y/#obj-y/' {} +
 
-      # 清理缓存
       - name: 清理旧编译残留
         run: |
           rm -rf kernel_platform/*/out out/
           find . -name ".config" -delete
 
-      # 权限修复
       - name: 全局赋权
         run: sudo chmod -R 777 $GITHUB_WORKSPACE
 
-      # 开始编译
       - name: 执行内核编译脚本
         run: |
           export SKIP_DEFCONFIG_VALIDATION=true
           export SKIP_GIT_CLEAN=1
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      # 打包内核
       - name: 打包AnyKernel
         run: |
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          IMG=$(find . -name Image |head -n1)
-          if [ -n "$IMG" ];then
-            cp $IMG AK3/
-            cd AK3 && zip -r ../S25_NoKnox.zip . -x .git/*
+          IMG=$(find . -name Image | head -n1)
+          if [ -n "$IMG" ]; then
+            cp "$IMG" AK3/
+            cd AK3 && zip -r ../S25_NoKnox.zip . -x ".git/*"
           else
+            echo "Error: Image not found!"
             exit 1
           fi
 
-      # 上传成品
-      - name: 上传内核压缩包
+      - name: 上传成品
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Ultra_SukiSU_去Knox内核
+          name: S25_Ultra_SukiSU_NoKnox_Kernel
           path: S25_NoKnox.zip
