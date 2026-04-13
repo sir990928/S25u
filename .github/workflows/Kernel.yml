@@ -65,7 +65,7 @@ jobs:
       - name: 物理屏蔽安全驱动 (Knox/UH/FIVE)
         run: |
           cd $GITHUB_WORKSPACE/kernel_platform/msm-kernel/drivers/samsung
-          # 修复了 KEYWORDS 的语法，确保循环在 shell 中正确执行
+          # 简化循环逻辑，避免 YAML 解析通配符出错
           for key in knox uh rkp five defex; do
             find . -type f \( -name "Kbuild" -o -name "Makefile" \) | \
             xargs sed -i "/$key/s/^obj-/#obj-/" 2>/dev/null || true
@@ -81,20 +81,17 @@ jobs:
       - name: 查找 Image 并打包
         run: |
           cd $GITHUB_WORKSPACE
-          # 克隆 AnyKernel3 并在当前目录操作
           git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git AK3
-          # 修正了查找逻辑，确保不会找错目录
-          IMAGE_PATH=$(find ./kernel_platform/out -type f -name "Image" 2>/dev/null | head -n 1)
-          if [ -z "$IMAGE_PATH" ]; then
-            IMAGE_PATH=$(find . -type f -name "Image" ! -path "./AK3/*" | head -n 1)
-          fi
+          # 使用更简单的路径查找，避免 L106 附近的语法冲突
+          IMAGE_PATH=$(find ./kernel_platform -name "Image" -type f | head -n 1)
           
-          if [ -n "$IMAGE_PATH" ]; then
+          if [ -f "$IMAGE_PATH" ]; then
+            echo "找到镜像: $IMAGE_PATH"
             cp "$IMAGE_PATH" AK3/
             cd AK3
             zip -r ../S25_NoKnox_SukiSU.zip . -x ".git/*"
           else
-            echo "未找到编译生成的 Image 文件"
+            echo "错误: 未找到 Image 文件"
             exit 1
           fi
 
