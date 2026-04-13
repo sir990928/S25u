@@ -27,33 +27,36 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           cd $GITHUB_WORKSPACE
 
-      - name: 先 prepare 生成 .config
+      # 🔥 核心：一边编译一边监听 .config，生成瞬间修改
+      - name: 编译内核 + 动态修改 .config
         run: |
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun prepare
-
-      - name: 提取 .config 并修改配置
-        run: |
-          CONFIG_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" | head -n 1)
-          echo "找到.config：$CONFIG_PATH"
-
-          # 禁用安全
-          sed -i 's/CONFIG_KNOX=y/CONFIG_KNOX=n/g' "$CONFIG_PATH"
-          sed -i 's/CONFIG_SECURITY_SELINUX=y/CONFIG_SECURITY_SELINUX=n/g' "$CONFIG_PATH"
-          sed -i 's/CONFIG_DM_VERITY=y/CONFIG_DM_VERITY=n/g' "$CONFIG_PATH"
-          sed -i 's/CONFIG_AVB=y/CONFIG_AVB=n/g' "$CONFIG_PATH"
-
-          # 开启 KPM
-          echo "CONFIG_KPM=y" >> "$CONFIG_PATH"
-
-          # SukiSU
-          echo "CONFIG_KSU=y" >> "$CONFIG_PATH"
-          echo "CONFIG_KSU_ALLOW_SU_ROOT=y" >> "$CONFIG_PATH"
-
-          # 自定义内核名称 ←↓ 自己改成想要的名字
-          echo "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" >> "$CONFIG_PATH"
-
-      - name: 正式完整编译内核
-        run: |
+          # 后台监听，一旦 .config 生成立刻修改
+          (
+            while true; do
+              CONFIG_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
+              if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
+                
+                echo "✅ 捕获到 .config: $CONFIG_PATH"
+                
+                # 禁用安全
+                sed -i 's/CONFIG_KNOX=y/CONFIG_KNOX=n/g' "$CONFIG_PATH"
+                sed -i 's/CONFIG_SECURITY_SELINUX=y/CONFIG_SECURITY_SELINUX=n/g' "$CONFIG_PATH"
+                sed -i 's/CONFIG_DM_VERITY=y/CONFIG_DM_VERITY=n/g' "$CONFIG_PATH"
+                sed -i 's/CONFIG_AVB=y/CONFIG_AVB=n/g' "$CONFIG_PATH"
+                
+                # 开启 KPM
+                echo "CONFIG_KPM=y" >> "$CONFIG_PATH"
+                
+                # 自定义内核名称
+                echo "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" >> "$CONFIG_PATH"
+                
+                break
+              fi
+              sleep 0.2
+            done
+          ) &
+          
+          # 直接运行你的正常编译，不等待、不prepare
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: 打包 AnyKernel3
