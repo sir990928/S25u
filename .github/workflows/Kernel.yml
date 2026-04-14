@@ -16,24 +16,88 @@ jobs:
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
-      - name: SukiSU
+      - name: Inject SukiSU
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
 
-      - name: Configure
+      # ==============================================
+      # 🔥 只改配置表，没有任何动态注入
+      # ==============================================
+      - name: Apply config to sun_perf.config
         run: |
           FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
 
-          # 清空我们要改的配置，避免重复定义报错
+          # 先清理旧配置，避免重复
           sed -i '/CONFIG_LOCALVERSION/d' "$FILE"
           sed -i '/CONFIG_KPM/d' "$FILE"
-          sed -i '/CONFIG_KNOX_NCM/d' "$FILE"
+          sed -i '/CONFIG_KNOX/d' "$FILE"
           sed -i '/CONFIG_UH/d' "$FILE"
           sed -i '/CONFIG_RKP/d' "$FILE"
           sed -i '/CONFIG_KDP/d' "$FILE"
           sed -i '/CONFIG_SECURITY_SELINUX/d' "$FILE"
           sed -i '/CONFIG_DM_VERITY/d' "$FILE"
+          sed -i '/CONFIG_AVB/d' "$FILE"
+
+          # 写入我们的配置
+          echo "" >> "$FILE"
+          echo "# Custom Kernel Config" >> "$FILE"
+          echo 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"' >> "$FILE"
+          echo "CONFIG_KPM=y" >> "$FILE"
+          echo "CONFIG_KNOX_NCM=n" >> "$FILE"
+          echo "CONFIG_UH=n" >> "$FILE"
+          echo "CONFIG_RKP=n" >> "$FILE"
+          echo "CONFIG_KDP=n" >> "$FILE"
+          echo "CONFIG_SECURITY_SELINUX=n" >> "$FILE"
+          echo "CONFIG_SECURITY_SELINUX_PERMISSIVE=y" >> "$FILE"
+          echo "CONFIG_DM_VERITY=n" >> "$FILE"
+          echo "CONFIG_AVB=n" >> "$FILE"
+
+      # ==============================================
+      # 🔥 关键：关闭三星的配置覆盖检测
+      # ==============================================
+      - name: Build
+        run: |
+          cd kernel_platform
+          ./tools/bazel clean --expunge || true
+          cd ..
+
+          # 允许配置覆盖（必须加，否则三星直接报错）
+          export KCONFIG_ALLOW_OVERRIDE=y
+          export KCONFIG_WERROR=false
+
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun
+
+      # ==============================================
+      # 提取最终 .config 给你核对
+      # ==============================================
+      - name: Extract final .config
+        run: |
+          CFG=$(find kernel_platform/bazel-out/ -name ".config" | head -n 1)
+          if [ -f "$CFG" ]; then
+            cp "$CFG" ./final_kernel.config
+          fi
+
+      - name: Package AnyKernel3
+        run: |
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+
+          find kernel_platform/out -name "Image" | head -n 1 | xargs -I{} cp {} AK3/
+          find kernel_platform/out -name "dtbo.img" | head -n 1 | xargs -I{} cp {} AK3/
+
+          mkdir -p AK3/modules
+          find kernel_platform/out -name "*.ko" | xargs -r cp -t AK3/modules/
+
+          cp ./final_kernel.config AK3/ 2>/dev/null || true
+
+          cd AK3
+          zip -r ../S25_Build.zip . -x ".git/*"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_Kernel
+          path: S25_Build.zip
           sed -i '/CONFIG_AVB/d' "$FILE"
 
           # 统一写到文件末尾（不会重复）
