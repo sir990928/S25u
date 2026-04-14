@@ -1,4 +1,4 @@
-name: S25 GKI SukiSU + Knox Patch + Config Export
+name: S25_GKI_Build
 on:
   push:
     branches: [ main ]
@@ -8,32 +8,68 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Dependencies
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
-      - name: Setup SukiSU (Builtin)
+      - name: SukiSU
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
 
-      - name: Write Config to sun_perf.config
+      - name: Configure
         run: |
           FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
-          printf "\n# Custom Kernel Configs\n" >> "$FILE"
-          printf "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"\n" >> "$FILE"
-          printf "CONFIG_KPM=y\n" >> "$FILE"
-          printf "CONFIG_KNOX_NCM=n\n" >> "$FILE"
-          printf "CONFIG_UH=n\n" >> "$FILE"
-          printf "CONFIG_RKP=n\n" >> "$FILE"
-          printf "CONFIG_KDP=n\n" >> "$FILE"
-          printf "CONFIG_SECURITY_SELINUX=n\n" >> "$FILE"
-          printf "CONFIG_SECURITY_SELINUX_PERMISSIVE=y\n" >> "$FILE"
-          printf "CONFIG_DM_VERITY=n\n" >> "$FILE"
+          printf "\nCONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"\n" >> $FILE
+          printf "CONFIG_KPM=y\n" >> $FILE
+          printf "CONFIG_KNOX_NCM=n\n" >> $FILE
+          printf "CONFIG_UH=n\n" >> $FILE
+          printf "CONFIG_RKP=n\n" >> $FILE
+          printf "CONFIG_KDP=n\n" >> $FILE
+          printf "CONFIG_SECURITY_SELINUX=n\n" >> $FILE
+          printf "CONFIG_SECURITY_SELINUX_PERMISSIVE=y\n" >> $FILE
+          printf "CONFIG_DM_VERITY=n\n" >> $FILE
+          printf "CONFIG_AVB=n\n" >> $FILE
+
+      - name: Compile
+        run: |
+          cd kernel_platform
+          ./tools/bazel clean --expunge || true
+          cd ..
+          export KCONFIG_WERROR=false
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
+
+      - name: Extract_Config
+        run: |
+          # 按照你指定的路径提取
+          TARGET_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
+          if [ -n "$TARGET_PATH" ]; then
+            cp "$TARGET_PATH" ./final_kernel.config
+          else
+            echo "Config not found"
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
+          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
+          mkdir -p AK3/modules
+          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
+          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
+          cd AK3
+          zip -r "../S25_Build.zip" . -x ".git/*"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_Kernel_Package
+          path: S25_Build.zip
           printf "CONFIG_AVB=n\n" >> "$FILE"
 
       - name: Build Kernel
