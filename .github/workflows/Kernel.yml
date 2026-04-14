@@ -1,4 +1,4 @@
-name: S25 GKI SukiSU + 禁用Knox + 自动提取Config对表
+name: S25 GKI SukiSU + 禁用Knox + 提取指定路径Config
 on:
   push:
     branches: [ main ]
@@ -29,11 +29,70 @@ jobs:
       - name: 写入配置到 sun_perf.config
         run: |
           FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
-          
-          # 直接使用 printf 写入，这种写法对 YAML 最友好，不会产生解析歧义
+          # 使用 printf 确保不会触发 YAML 解析错误
           printf "\n# Custom Kernel Configs\n" >> "$FILE"
           printf "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"\n" >> "$FILE"
           printf "CONFIG_KPM=y\n" >> "$FILE"
+          printf "CONFIG_KNOX_NCM=n\n" >> "$FILE"
+          printf "CONFIG_UH=n\n" >> "$FILE"
+          printf "CONFIG_RKP=n\n" >> "$FILE"
+          printf "CONFIG_KDP=n\n" >> "$FILE"
+          printf "CONFIG_SECURITY_SELINUX=n\n" >> "$FILE"
+          printf "CONFIG_SECURITY_SELINUX_PERMISSIVE=y\n" >> "$FILE"
+          printf "CONFIG_DM_VERITY=n\n" >> "$FILE"
+          printf "CONFIG_AVB=n\n" >> "$FILE"
+          echo "✅ 配置已写入 $FILE"
+
+      - name: 编译内核
+        run: |
+          cd kernel_platform
+          ./tools/bazel clean --expunge || true
+          cd ..
+          # 核心参数：--kconfig_werror=false 必须带上，否则你指定的路径下不会生成最终文件
+          export KCONFIG_WERROR=false
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
+
+      - name: 提取目标路径 .config
+        run: |
+          # 锁定你要求的路径进行查找
+          # 注意：此路径在 bazel 报错退出时可能被清理，所以上面的 --kconfig_werror=false 至关重要
+          CONFIG_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
+          
+          if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
+              cp "$CONFIG_PATH" ./final_kernel.config
+              echo "✅ 已提取目标路径配置: $CONFIG_PATH"
+          else
+              echo "❌ 提取失败：在指定路径下未找到 .config"
+              echo "尝试打印目录结构协助排查："
+              ls -R kernel_platform/bazel-out/k8-fastbuild/bin/common 2>/dev/null | head -n 20 || true
+              exit 1
+          fi
+
+      - name: 打包产物与 .config
+        run: |
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+          
+          # 拷贝内核镜像和 dtbo
+          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
+          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
+          
+          # 拷贝模块
+          mkdir -p AK3/modules
+          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
+          
+          # 🔥 把提取出来的 .config 放入包内，方便下载后手动对比
+          if [ -f "./final_kernel.config" ]; then
+              cp ./final_kernel.config AK3/
+          fi
+          
+          cd AK3
+          zip -r "../S25_GKI_SukiSU_KPM_With_Config.zip" . -x ".git/*"
+
+      - name: 上传内核包
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_Build_With_Config
+          path: S25_GKI_SukiSU_KPM_With_Config.zip
           printf "CONFIG_KNOX_NCM=n\n" >> "$FILE"
           printf "CONFIG_UH=n\n" >> "$FILE"
           printf "CONFIG_RKP=n\n" >> "$FILE"
