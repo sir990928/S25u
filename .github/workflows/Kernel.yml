@@ -1,4 +1,4 @@
-name: S25_GKI_Build
+name: S25 内核编译定制版
 on:
   push:
     branches: [ main ]
@@ -8,32 +8,75 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: Dependencies
+      - name: 安装环境依赖
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
-      - name: Inject SukiSU
+      - name: 配置 SukiSU
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
 
-      # ==============================================
-      # 🔥 只改配置表，没有任何动态注入
-      # ==============================================
-      - name: Apply config to sun_perf.config
+      - name: 修改内核配置与名称
         run: |
           FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
+          # 删除原有的本地版本定义，替换为你的自定义名称
+          sed -i '/CONFIG_LOCALVERSION/d' $FILE
+          printf 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"\n' >> $FILE
+          
+          # 注入功能配置
+          printf "CONFIG_KPM=y\n" >> $FILE
+          printf "CONFIG_KNOX_NCM=n\n" >> $FILE
+          printf "CONFIG_UH=n\n" >> $FILE
+          printf "CONFIG_RKP=n\n" >> $FILE
+          printf "CONFIG_KDP=n\n" >> $FILE
+          printf "CONFIG_SECURITY_SELINUX=n\n" >> $FILE
+          printf "CONFIG_SECURITY_SELINUX_PERMISSIVE=y\n" >> $FILE
+          printf "CONFIG_DM_VERITY=n\n" >> $FILE
+          printf "CONFIG_AVB=n\n" >> $FILE
 
-          # 先清理旧配置，避免重复
-          sed -i '/CONFIG_LOCALVERSION/d' "$FILE"
-          sed -i '/CONFIG_KPM/d' "$FILE"
-          sed -i '/CONFIG_KNOX/d' "$FILE"
-          sed -i '/CONFIG_UH/d' "$FILE"
-          sed -i '/CONFIG_RKP/d' "$FILE"
+      - name: 执行内核编译
+        run: |
+          cd kernel_platform
+          ./tools/bazel clean --expunge || true
+          cd ..
+          export KCONFIG_WERROR=false
+          # 必须携带此参数以跳过配置冲突检查
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
+
+      - name: 提取指定路径Config
+        run: |
+          # 锁定你要求的沙盒路径进行提取
+          TARGET_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
+          if [ -n "$TARGET_PATH" ]; then
+            cp "$TARGET_PATH" ./final_kernel.config
+            echo "✅ 已找到并提取 .config"
+          else
+            echo "❌ 未能在指定路径找到 .config"
+            exit 1
+          fi
+
+      - name: 打包 AnyKernel3
+        run: |
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
+          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
+          mkdir -p AK3/modules
+          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
+          # 将提取的配置放入包内供你对比
+          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
+          cd AK3
+          zip -r "../S25_内核打包.zip" . -x ".git/*"
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_内核产物包
+          path: S25_内核打包.zip
           sed -i '/CONFIG_KDP/d' "$FILE"
           sed -i '/CONFIG_SECURITY_SELINUX/d' "$FILE"
           sed -i '/CONFIG_DM_VERITY/d' "$FILE"
