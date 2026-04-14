@@ -24,16 +24,59 @@ jobs:
       - name: 修改内核配置与名称
         run: |
           FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
-          # 删除原有的本地版本定义，替换为你的自定义名称
+          # 先清理已有的版本定义，防止重复定义导致编译失败
           sed -i '/CONFIG_LOCALVERSION/d' $FILE
           printf 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"\n' >> $FILE
           
-          # 注入功能配置
+          # 注入功能性配置
           printf "CONFIG_KPM=y\n" >> $FILE
           printf "CONFIG_KNOX_NCM=n\n" >> $FILE
           printf "CONFIG_UH=n\n" >> $FILE
           printf "CONFIG_RKP=n\n" >> $FILE
           printf "CONFIG_KDP=n\n" >> $FILE
+          printf "CONFIG_SECURITY_SELINUX=n\n" >> $FILE
+          printf "CONFIG_SECURITY_SELINUX_PERMISSIVE=y\n" >> $FILE
+          printf "CONFIG_DM_VERITY=n\n" >> $FILE
+          printf "CONFIG_AVB=n\n" >> $FILE
+
+      - name: 执行内核编译
+        run: |
+          cd kernel_platform
+          ./tools/bazel clean --expunge || true
+          cd ..
+          export KCONFIG_WERROR=false
+          # 核心参数：必须忽略配置冲突，否则提取不到 .config
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
+
+      - name: 提取指定路径Config
+        run: |
+          # 锁定你要求的沙盒路径进行提取
+          TARGET_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
+          if [ -n "$TARGET_PATH" ]; then
+            cp "$TARGET_PATH" ./final_kernel.config
+            echo "✅ 成功提取 .config"
+          else
+            echo "❌ 提取失败：未在路径下找到 .config"
+            exit 1
+          fi
+
+      - name: 打包 AnyKernel3
+        run: |
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
+          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
+          mkdir -p AK3/modules
+          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
+          # 将最终配置打包进去供你核对
+          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
+          cd AK3
+          zip -r "../S25_内核产物包.zip" . -x ".git/*"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_Kernel_Artifact
+          path: S25_内核产物包.zip
           printf "CONFIG_SECURITY_SELINUX=n\n" >> $FILE
           printf "CONFIG_SECURITY_SELINUX_PERMISSIVE=y\n" >> $FILE
           printf "CONFIG_DM_VERITY=n\n" >> $FILE
