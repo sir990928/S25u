@@ -1,7 +1,7 @@
 name: S25_GKI_Build
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -18,69 +18,60 @@ jobs:
       - name: Fix line endings
         run: find . -name "*.sh" -exec dos2unix {} + || true
 
-      - name: Setup SukiSU
-        run: |
-          cd kernel_platform/common
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
-
-      - name: Patch both allmodconfig
-        run: |
-          cat > append.txt <<'EOF'
-
-POST_DEFCONFIG_CMDS="update_config"
-update_config() {
-    ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
-        -e UNWINDER_FRAME_POINTER \
-        -d WERROR \
-        -d SAMPLES \
-        -d BPFILTER \
-        -e RANDSTRUCT_NONE \
-        -d RANDSTRUCT_FULL \
-        -d RANDSTRUCT \
-        -d AF_RXRPC \
-        -d AFS_FS \
-        -e KPM \
-        -d KNOX_NCM \
-        -d UH \
-        -d RKP \
-        -d KDP \
-        -d SECURITY_DEFEX \
-        -d INTEGRITY \
-        -d FIVE \
-        -d TRIM_UNUSED_KSYMS
-
-    echo "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" >> ${OUT_DIR}/.config
-
-    (cd ${OUT_DIR} && \
-     make O=${OUT_DIR} $archsubarch CROSS_COMPILE=${CROSS_COMPILE} ${TOOL_ARGS} ${MAKE_ARGS} olddefconfig)
-}
-EOF
-
-          for FILE in \
-            kernel_platform/common/build.config.allmodconfig \
-            kernel_platform/msm-kernel/build.config.allmodconfig
-          do
-            [ -f "$FILE" ] && cat append.txt >> "$FILE"
-          done
-
       - name: Build kernel
         run: |
           export KCONFIG_WERROR=false
           export SKIP_DEFCONFIG_VALIDATION=1
+          export POST_DEFCONFIG_CMDS="update_config"
+
+          update_config() {
+              scripts/config --file .config \
+                  -e UNWINDER_FRAME_POINTER \
+                  -d WERROR \
+                  -d SAMPLES \
+                  -d BPFILTER \
+                  -e RANDSTRUCT_NONE \
+                  -d RANDSTRUCT_FULL \
+                  -d RANDSTRUCT \
+                  -d AF_RXRPC \
+                  -d AFS_FS \
+                  -e KPM \
+                  -d KNOX_NCM \
+                  -d UH \
+                  -d RKP \
+                  -d KDP \
+                  -d SECURITY_DEFEX \
+                  -d INTEGRITY \
+                  -d FIVE \
+                  -d TRIM_UNUSED_KSYMS
+
+              echo 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"' >> .config
+              make olddefconfig
+          }
+
           bash build_kernel_GKI.sh pa3q_chn_openx user sun --nocheck_defconfig || true
 
-      - name: Collect output
+      - name: Collect all files
         if: always()
         run: |
           mkdir -p output
-          find kernel_platform/bazel-out/k8-fastbuild -name .config -exec cp {} output/ \;
-          find kernel_platform/out -name "Image*" -exec cp {} output/ \;
+
+          # 复制你指定路径的 .config，* 号会自动匹配随机目录
+          cp kernel_platform/bazel-out/k8-fastbuild/bin/common/*/out_dir/.config output/ 2>/dev/null
+
+          # 内核镜像
+          find . -name "Image*" -type f -exec cp {} output/ \;
+
+          # dtbo.img
+          find . -name "dtbo.img" -type f -exec cp {} output/ \;
+
+          # 所有 .ko 模块
+          find . -name "*.ko" -type f -exec cp {} output/ \;
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Build
+          name: S25_Build_Full
           path: output/
-
 
