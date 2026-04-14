@@ -68,7 +68,8 @@ jobs:
         if: always()
         run: |
           mkdir -p output
-          cp kernel_platform/bazel-out/k8-fastbuild/bin/common/*/out_dir/.config output/ 2>/dev/null
+          # 👇 只修改了这一行，改用 find 全局搜索，无论目录嵌套几级都能找到
+          find kernel_platform/bazel-out/k8-fastbuild/bin/common/ -name ".config" -exec cp {} output/ \; 2>/dev/null
           find . -name "Image*" -type f -exec cp {} output/ \;
           find . -name "dtbo.img" -type f -exec cp {} output/ \;
           find . -name "*.ko" -type f -exec cp {} output/ \;
@@ -79,4 +80,3 @@ jobs:
         with:
           name: S25_GKI_SukiSU
           path: output/
-
