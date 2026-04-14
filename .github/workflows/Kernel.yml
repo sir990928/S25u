@@ -1,4 +1,4 @@
-Name: S25_GKI_Build
+name: S25_GKI_Build
 on:
   push:
     branches: [ main ]
@@ -16,172 +16,40 @@ jobs:
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
+      - name: 环境预处理
+        run: |
+          # 仅处理脚本换行符，避免权限操作导致悬空链接报错
+          find . -name "*.sh" -type f -exec dos2unix {} + || true
+
       - name: 配置 SukiSU
         run: |
           cd kernel_platform/common
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
-
-      - name: 修改内核名与注入功能配置
-        run: |
-          # 仅针对 sun_perf.config 进行修改
-          FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
-          
-          # 1. 修改内核 Localversion (删除原有，写入自定义)
-          sed -i '/CONFIG_LOCALVERSION/d' $FILE
-          printf 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"\n' >> $FILE
-          
-          # 2. 注入 KPM 等功能项 (不触碰 SELINUX 和 VERITY)
-          printf "CONFIG_KPM=y\n" >> $FILE
-          printf "CONFIG_KNOX_NCM=n\n" >> $FILE
-          printf "CONFIG_UH=n\n" >> $FILE
-          printf "CONFIG_RKP=n\n" >> $FILE
-          printf "CONFIG_KDP=n\n" >> $FILE
-          echo "✅ 配置注入完成，且未变动 SELinux/Verity"
-
-      - name: 开始编译
-        run: |
-          cd kernel_platform
-          ./tools/bazel clean --expunge || true
-          cd ..
-          # 即使不动核心参数，建议保留 --kconfig_werror=false 以防止其他碎片冲突
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
-
-      - name: 提取目标路径配置
-        run: |
-          # 锁定沙盒路径提取最终生成的 .config
-          TARGET_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
-          if [ -n "$TARGET_PATH" ]; then
-            cp "$TARGET_PATH" ./final_kernel.config
-            echo "✅ 成功提取沙盒配置"
+          if [ -f "setup.sh" ]; then
+            bash setup.sh builtin
           else
-            echo "❌ 未发现目标文件"
-            exit 1
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           fi
 
-      - name: 打包产物
+      - name: 修改内核名与注入功能
         run: |
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
-          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
-          mkdir -p AK3/modules
-          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
-          # 将提取出来的 .config 放入包内
-          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
-          cd AK3
-          zip -r "../S25_Flash_Kernel.zip" . -x ".git/*"
-
-      - name: 上传结果
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_Kernel_Artifact
-          path: S25_Flash_Kernel.zip
-用这个SELINUX=n 和 DM_VERITY=n这两个去除 不需要不动他们两个          
-          # 1. 注入自定义内核名 (CONFIG_LOCALVERSION)
+          FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
+          # 确保自定义名称唯一
           sed -i '/CONFIG_LOCALVERSION/d' $FILE
           printf 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"\n' >> $FILE
-          
-          # 2. 注入核心功能 (已移除 SELINUX 和 DM_VERITY 修改)
+          # 注入 KPM 等功能
           printf "CONFIG_KPM=y\n" >> $FILE
           printf "CONFIG_KNOX_NCM=n\n" >> $FILE
           printf "CONFIG_UH=n\n" >> $FILE
           printf "CONFIG_RKP=n\n" >> $FILE
           printf "CONFIG_KDP=n\n" >> $FILE
-          echo "✅ 功能配置已注入，未变动安全项"
+          echo "✅ 配置注入完成"
 
       - name: 开始编译
         run: |
           cd kernel_platform
-          # 直接用解释器调用工具，无需修改权限
           python3 ./tools/bazel clean --expunge || true
           cd ..
           export KCONFIG_WERROR=false
-          # 使用 bash 显式运行主编译脚本
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
-
-      - name: 提取目标路径配置
-        run: |
-          # 锁定沙盒路径提取最终生成的 .config
-          TARGET_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
-          if [ -n "$TARGET_PATH" ]; then
-            cp "$TARGET_PATH" ./final_kernel.config
-            echo "✅ 成功提取沙盒配置"
-          else
-            echo "❌ 未发现目标文件，请检查编译阶段日志"
-            exit 1
-          fi
-
-      - name: 打包产物
-        run: |
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
-          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
-          mkdir -p AK3/modules
-          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
-          # 将最终 Config 放入包内方便核对
-          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
-          cd AK3
-          zip -r "../S25_Flash_Kernel.zip" . -x ".git/*"
-
-      - name: 上传结果
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_Kernel_Artifact
-          path: S25_Flash_Kernel.zip
-          printf 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"\n' >> $FILE
-          
-          # 注入功能项
-          printf "CONFIG_KPM=y\n" >> $FILE
-          printf "CONFIG_KNOX_NCM=n\n" >> $FILE
-          printf "CONFIG_UH=n\n" >> $FILE
-          printf "CONFIG_RKP=n\n" >> $FILE
-          printf "CONFIG_KDP=n\n" >> $FILE
-
-      - name: 开始编译
-        run: |
-          cd kernel_platform
-          ./tools/bazel clean --expunge || true
-          cd ..
-          export KCONFIG_WERROR=false
-          # 显式使用 bash 运行，确保权限无忧
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
-
-      - name: 提取目标路径配置
-        run: |
-          # 锁定沙盒路径提取最终生成的 .config
-          TARGET_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
-          if [ -n "$TARGET_PATH" ]; then
-            cp "$TARGET_PATH" ./final_kernel.config
-            echo "✅ 成功提取沙盒配置"
-          else
-            echo "❌ 未发现目标文件，请检查编译日志"
-            exit 1
-          fi
-
-      - name: 打包产物
-        run: |
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
-          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
-          mkdir -p AK3/modules
-          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
-          # 放入提取出的 .config 供你对比
-          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
-          cd AK3
-          zip -r "../S25_Flash_Kernel.zip" . -x ".git/*"
-
-      - name: 上传结果
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_Kernel_Artifact
-          path: S25_Flash_Kernel.zip
-
-      - name: 开始编译
-        run: |
-          cd kernel_platform
-          ./tools/bazel clean --expunge || true
-          cd ..
-          # 禁用配置检查，允许修改 SELinux/Verity
-          export KCONFIG_WERROR=false
           bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
 
       - name: 提取目标路径配置
@@ -203,13 +71,15 @@ jobs:
           find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
           mkdir -p AK3/modules
           find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
-          # 将提取出来的 .config 放入包内
-          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
+          # 修复第 89 行逻辑：确保路径和判断语法严谨
+          if [ -f "./final_kernel.config" ]; then
+            cp ./final_kernel.config AK3/
+          fi
           cd AK3
-          zip -r "../S25_内核打包产物.zip" . -x ".git/*"
+          zip -r "../S25_Flash_Kernel.zip" . -x ".git/*"
 
       - name: 上传结果
         uses: actions/upload-artifact@v4
         with:
           name: S25_Kernel_Artifact
-          path: S25_内核打包产物.zip
+          path: S25_Flash_Kernel.zip
