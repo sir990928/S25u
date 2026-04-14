@@ -8,102 +8,68 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出仓库
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 安装环境依赖
+      - name: 安装依赖
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
-      - name: 环境预处理
-        run: |
-          find . -name "*.sh" -type f -exec dos2unix {} + || true
-
-      - name: 配置 SukiSU
+      - name: 安装 SukiSU
         run: |
           cd kernel_platform/common
-          if [ -f "setup.sh" ]; then
-            bash setup.sh builtin
-          else
-            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
-          fi
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
 
-      - name: 注入禁用与启用配置 (补齐前缀版)
+      - name: 【一次性写入配置】编译前改好
         run: |
-          FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
-          
-          # 需要启用的项
-          configs_on=(
-            "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\""
-            "CONFIG_KPM=y"
-          )
+          FILE=kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config
 
-          # 需要禁用的项 (全部带上 CONFIG_)
-          configs_off=(
-            "CONFIG_KNOX_NCM"
-            "CONFIG_UH"
-            "CONFIG_RKP"
-            "CONFIG_KDP"
-            "CONFIG_SECURITY_DEFEX"
-            "CONFIG_INTEGRITY"
-            "CONFIG_FIVE"
-            "CONFIG_TRIM_UNUSED_KSYMS"
-          )
+          # 先清理旧的，避免重复
+          sed -i '/CONFIG_KPM/d' $FILE
+          sed -i '/CONFIG_LOCALVERSION.*S25/d' $FILE
+          sed -i '/CONFIG_KNOX_NCM/d' $FILE
+          sed -i '/CONFIG_UH/d' $FILE
+          sed -i '/CONFIG_RKP/d' $FILE
+          sed -i '/CONFIG_KDP/d' $FILE
+          sed -i '/CONFIG_SECURITY_DEFEX/d' $FILE
+          sed -i '/CONFIG_INTEGRITY/d' $FILE
+          sed -i '/CONFIG_FIVE/d' $FILE
+          sed -i '/CONFIG_TRIM_UNUSED_KSYMS/d' $FILE
 
-          # 处理启用项
-          for cfg in "${configs_on[@]}"; do
-            key=$(echo "$cfg" | cut -d'=' -f1)
-            sed -i "/$key/d" $FILE || true
-            echo "$cfg" >> $FILE
-          done
+          # 统一写入新配置（只写一次）
+          echo "" >> $FILE
+          echo "# Custom Config" >> $FILE
+          echo "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" >> $FILE
+          echo "CONFIG_KPM=y" >> $FILE
+          echo "CONFIG_KNOX_NCM=n" >> $FILE
+          echo "CONFIG_UH=n" >> $FILE
+          echo "CONFIG_RKP=n" >> $FILE
+          echo "CONFIG_KDP=n" >> $FILE
+          echo "CONFIG_SECURITY_DEFEX=n" >> $FILE
+          echo "CONFIG_INTEGRITY=n" >> $FILE
+          echo "CONFIG_FIVE=n" >> $FILE
+          echo "CONFIG_TRIM_UNUSED_KSYMS=n" >> $FILE
 
-          # 处理禁用项
-          for key in "${configs_off[@]}"; do
-            sed -i "/$key/d" $FILE || true
-            echo "$key=n" >> $FILE
-          done
-          
-          echo "✅ 注入完成，当前 sun_perf.config 尾部内容："
-          tail -n 10 $FILE
-
-      - name: 执行内核编译 (忽略校验报错)
+      - name: 开始编译
         run: |
-          cd kernel_platform
-          python3 ./tools/bazel clean --expunge || true
-          cd ..
           export KCONFIG_WERROR=false
-          export SKIP_DEFCONFIG_VALIDATION=true
-          # 哪怕报错也继续，为了提取 .config
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false --nocheck_defconfig || echo "⚠️ 触发校验熔断，准备提取配置..."
+          export SKIP_DEFCONFIG_VALIDATION=1
+          cd kernel_platform
+          python3 tools/bazel clean --expunge
+          bash ../build_kernel_GKI.sh pa3q_chn_openx user sun --nocheck_defconfig
 
-      - name: 强力提取 .config
+      - name: 打包输出
         if: always()
         run: |
-          # 搜索并提取最终配置
-          TARGET_PATH=$(find kernel_platform/bazel-out -name ".config" -exec grep -l "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" {} + | head -n 1)
-          
-          if [ -n "$TARGET_PATH" ]; then
-            cp "$TARGET_PATH" ./final_kernel.config
-            echo "✅ 成功提取配置: $TARGET_PATH"
-          else
-            echo "❌ 未找到精准匹配，尝试提取任意生成的配置"
-            find kernel_platform/bazel-out -name ".config" -exec cp {} ./final_kernel.config \; -quit
-          fi
+          mkdir output
+          find kernel_platform/out -name "Image*" -exec cp {} output/ \;
+          find kernel_platform/bazel-out -name ".config" -exec cp {} output/ \;
+          zip -r S25_Output.zip output/
 
-      - name: 打包产物
-        if: always()
-        run: |
-          mkdir -p output
-          [ -f "./final_kernel.config" ] && cp ./final_kernel.config output/
-          find kernel_platform/out -name "Image" -exec cp {} output/ \; || true
-          cd output
-          zip -r "../S25_Final_Verify.zip" .
-
-      - name: 上传
-        if: always()
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Config_Verify
-          path: S25_Final_Verify.zip
+          name: S25_Build
+          path: S25_Output.zip
 
