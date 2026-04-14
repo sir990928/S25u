@@ -18,49 +18,63 @@ jobs:
 
       - name: 环境预处理
         run: |
-          # 仅处理脚本换行符，避免权限操作导致悬空链接报错
+          # 仅处理脚本换行符，跳过权限操作以避免悬空软链接报错
           find . -name "*.sh" -type f -exec dos2unix {} + || true
 
       - name: 配置 SukiSU
         run: |
           cd kernel_platform/common
+          # 优先使用本地脚本，显式调用 bash 绕过权限执行
           if [ -f "setup.sh" ]; then
             bash setup.sh builtin
           else
             curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           fi
 
-      - name: 修改内核名与注入功能
+      - name: 修改内核名与注入功能配置
         run: |
           FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
-          # 确保自定义名称唯一
-          sed -i '/CONFIG_LOCALVERSION/d' $FILE
-          printf 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"\n' >> $FILE
-          # 注入 KPM 等功能
-          printf "CONFIG_KPM=y\n" >> $FILE
-          printf "CONFIG_KNOX_NCM=n\n" >> $FILE
-          printf "CONFIG_UH=n\n" >> $FILE
-          printf "CONFIG_RKP=n\n" >> $FILE
-          printf "CONFIG_KDP=n\n" >> $FILE
-          echo "✅ 配置注入完成"
+          
+          # 定义需要强制写入的配置数组
+          configs=(
+            "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\""
+            "CONFIG_KPM=y"
+            "CONFIG_KNOX_NCM=n"
+            "CONFIG_UH=n"
+            "CONFIG_RKP=n"
+            "CONFIG_KDP=n"
+          )
 
-      - name: 开始编译
+          # 核心修复逻辑：先删后写，避免 Bazel 触发“重定义”警告导致报错
+          for cfg in "${configs[@]}"; do
+            key=$(echo "$cfg" | cut -d'=' -f1)
+            # 删除文件中已存在的该 key 行（防止重定义警告）
+            sed -i "/$key/d" $FILE
+            # 追加新配置
+            echo "$cfg" >> $FILE
+          done
+          
+          echo "✅ 冲突项已清理，功能配置注入完成"
+
+      - name: 执行内核编译
         run: |
           cd kernel_platform
+          # 显式使用 python3 调用工具，绕过 chmod 限制
           python3 ./tools/bazel clean --expunge || true
           cd ..
           export KCONFIG_WERROR=false
+          # 显式使用 bash 运行主编译脚本，并传递参数
           bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
 
-      - name: 提取目标路径配置
+      - name: 提取指定路径 Config
         run: |
           # 锁定沙盒路径提取最终生成的 .config
           TARGET_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
           if [ -n "$TARGET_PATH" ]; then
             cp "$TARGET_PATH" ./final_kernel.config
-            echo "✅ 成功提取沙盒配置"
+            echo "✅ 成功提取 .config"
           else
-            echo "❌ 未发现目标文件"
+            echo "❌ 提取失败：请检查编译阶段日志中的错误信息"
             exit 1
           fi
 
@@ -71,7 +85,7 @@ jobs:
           find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
           mkdir -p AK3/modules
           find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
-          # 修复第 89 行逻辑：确保路径和判断语法严谨
+          # 将最终 Config 放入压缩包，方便你手动核对
           if [ -f "./final_kernel.config" ]; then
             cp ./final_kernel.config AK3/
           fi
