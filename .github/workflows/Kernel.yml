@@ -18,6 +18,19 @@ jobs:
       - name: Fix line endings
         run: find . -name "*.sh" -exec dos2unix {} + || true
 
+      # 清理旧的 SUSFS / KSU 残留，避免报错
+      - name: Clean old KSU/SUSFS
+        run: |
+          cd kernel_platform/common
+          rm -rf drivers/kernelsu
+          rm -f include/linux/susfs.h
+
+      # 注入 SukiSU GKI 模式（真正内核ROOT）
+      - name: Setup SukiSU GKI
+        run: |
+          cd kernel_platform/common
+          curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
+
       - name: Build kernel
         run: |
           export KCONFIG_WERROR=false
@@ -45,7 +58,7 @@ jobs:
                   -d FIVE \
                   -d TRIM_UNUSED_KSYMS
 
-              echo 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"' >> .config
+              echo 'CONFIG_LOCALVERSION="-S25-GKI-SukiSU"' >> .config
               make olddefconfig
           }
 
@@ -55,23 +68,15 @@ jobs:
         if: always()
         run: |
           mkdir -p output
-
-          # 复制你指定路径的 .config，* 号会自动匹配随机目录
           cp kernel_platform/bazel-out/k8-fastbuild/bin/common/*/out_dir/.config output/ 2>/dev/null
-
-          # 内核镜像
           find . -name "Image*" -type f -exec cp {} output/ \;
-
-          # dtbo.img
           find . -name "dtbo.img" -type f -exec cp {} output/ \;
-
-          # 所有 .ko 模块
           find . -name "*.ko" -type f -exec cp {} output/ \;
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Build_Full
+          name: S25_GKI_SukiSU
           path: output/
 
