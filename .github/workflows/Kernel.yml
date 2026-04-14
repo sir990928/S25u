@@ -24,7 +24,13 @@ jobs:
       - name: Configure
         run: |
           FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
-          printf "\nCONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"\n" >> $FILE
+          
+          # 1. 修改自定义内核名称 (CONFIG_LOCALVERSION)
+          # 先删除旧的，再追加新的，确保唯一性
+          sed -i '/CONFIG_LOCALVERSION/d' $FILE
+          printf 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"\n' >> $FILE
+          
+          # 2. 追加其他功能配置
           printf "CONFIG_KPM=y\n" >> $FILE
           printf "CONFIG_KNOX_NCM=n\n" >> $FILE
           printf "CONFIG_UH=n\n" >> $FILE
@@ -45,12 +51,12 @@ jobs:
 
       - name: Extract_Config
         run: |
-          # 按照你指定的路径提取
+          # 从你指定的沙盒路径提取 .config
           TARGET_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
           if [ -n "$TARGET_PATH" ]; then
             cp "$TARGET_PATH" ./final_kernel.config
           else
-            echo "Config not found"
+            echo "Target config path not found"
             exit 1
           fi
 
@@ -61,164 +67,13 @@ jobs:
           find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
           mkdir -p AK3/modules
           find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
+          # 放入提取的 .config 供你核对
           [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
           cd AK3
-          zip -r "../S25_Build.zip" . -x ".git/*"
+          zip -r "../S25_Build_Output.zip" . -x ".git/*"
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Kernel_Package
-          path: S25_Build.zip
-          printf "CONFIG_AVB=n\n" >> "$FILE"
-
-      - name: Build Kernel
-        run: |
-          cd kernel_platform
-          ./tools/bazel clean --expunge || true
-          cd ..
-          export KCONFIG_WERROR=false
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
-
-      - name: Extract Target .config
-        run: |
-          # Searching your specific sandbox path
-          CONFIG_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
-          if [ -n "$CONFIG_PATH" ]; then
-            cp "$CONFIG_PATH" ./final_kernel.config
-            echo "✅ Extracted: $CONFIG_PATH"
-          else
-            echo "❌ .config not found in sandbox"
-            exit 1
-          fi
-
-      - name: Package AnyKernel3
-        run: |
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
-          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
-          mkdir -p AK3/modules
-          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
-          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
-          cd AK3
-          zip -r "../S25_GKI_SukiSU_KPM.zip" . -x ".git/*"
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_GKI_SukiSU_KPM
-          path: S25_GKI_SukiSU_KPM.zip
-          printf "CONFIG_UH=n\n" >> "$FILE"
-          printf "CONFIG_RKP=n\n" >> "$FILE"
-          printf "CONFIG_KDP=n\n" >> "$FILE"
-          printf "CONFIG_SECURITY_SELINUX=n\n" >> "$FILE"
-          printf "CONFIG_SECURITY_SELINUX_PERMISSIVE=y\n" >> "$FILE"
-          printf "CONFIG_DM_VERITY=n\n" >> "$FILE"
-          printf "CONFIG_AVB=n\n" >> "$FILE"
-          echo "✅ 配置已写入 $FILE"
-
-      - name: 编译内核
-        run: |
-          cd kernel_platform
-          ./tools/bazel clean --expunge || true
-          cd ..
-          # 核心参数：--kconfig_werror=false 必须带上，否则你指定的路径下不会生成最终文件
-          export KCONFIG_WERROR=false
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
-
-      - name: 提取目标路径 .config
-        run: |
-          # 锁定你要求的路径进行查找
-          # 注意：此路径在 bazel 报错退出时可能被清理，所以上面的 --kconfig_werror=false 至关重要
-          CONFIG_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
-          
-          if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
-              cp "$CONFIG_PATH" ./final_kernel.config
-              echo "✅ 已提取目标路径配置: $CONFIG_PATH"
-          else
-              echo "❌ 提取失败：在指定路径下未找到 .config"
-              echo "尝试打印目录结构协助排查："
-              ls -R kernel_platform/bazel-out/k8-fastbuild/bin/common 2>/dev/null | head -n 20 || true
-              exit 1
-          fi
-
-      - name: 打包产物与 .config
-        run: |
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          
-          # 拷贝内核镜像和 dtbo
-          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
-          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
-          
-          # 拷贝模块
-          mkdir -p AK3/modules
-          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
-          
-          # 🔥 把提取出来的 .config 放入包内，方便下载后手动对比
-          if [ -f "./final_kernel.config" ]; then
-              cp ./final_kernel.config AK3/
-          fi
-          
-          cd AK3
-          zip -r "../S25_GKI_SukiSU_KPM_With_Config.zip" . -x ".git/*"
-
-      - name: 上传内核包
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_Build_With_Config
-          path: S25_GKI_SukiSU_KPM_With_Config.zip
-          printf "CONFIG_KNOX_NCM=n\n" >> "$FILE"
-          printf "CONFIG_UH=n\n" >> "$FILE"
-          printf "CONFIG_RKP=n\n" >> "$FILE"
-          printf "CONFIG_KDP=n\n" >> "$FILE"
-          printf "CONFIG_SECURITY_SELINUX=n\n" >> "$FILE"
-          printf "CONFIG_SECURITY_SELINUX_PERMISSIVE=y\n" >> "$FILE"
-          printf "CONFIG_DM_VERITY=n\n" >> "$FILE"
-          printf "CONFIG_AVB=n\n" >> "$FILE"
-          
-          echo "✅ Config successfully appended to $FILE"
-
-      - name: 编译内核
-        run: |
-          cd kernel_platform
-          # 清理缓存以确保配置生效
-          ./tools/bazel clean --expunge || true
-          cd ..
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun
-
-      - name: 提取最终 .config
-        run: |
-          # 优先搜索产物目录 out，这是 Kleaf 编译后的汇总点
-          FINAL_CONFIG=$(find kernel_platform/out -name ".config" -type f | head -n 1)
-          
-          if [ -n "$FINAL_CONFIG" ]; then
-              cp "$FINAL_CONFIG" ./final_kernel.config
-              echo "✅ Extracted config: $FINAL_CONFIG"
-          else
-              echo "❌ ERROR: .config file not found!"
-              exit 1
-          fi
-
-      - name: 打包 AnyKernel3
-        run: |
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          
-          # 拷贝内核镜像
-          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
-          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
-          
-          # 拷贝模块
-          mkdir -p AK3/modules
-          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
-          
-          # 拷贝用于对表的 config
-          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
-          
-          cd AK3
-          zip -r "../S25_GKI_SukiSU_KPM.zip" . -x ".git/*"
-
-      - name: 上传内核包
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_GKI_SukiSU_KPM
-          path: S25_GKI_SukiSU_KPM.zip
+          name: S25_Kernel_Archive
+          path: S25_Build_Output.zip
