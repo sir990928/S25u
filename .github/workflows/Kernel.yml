@@ -1,4 +1,4 @@
-name: S25 GKI 内置SukiSU + 禁用Knox安全
+Name: S25 GKI SukiSU + Knox Patch + Config Export
 on:
   push:
     branches: [ main ]
@@ -8,32 +8,89 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout 仓库代码
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 🔥 必加：先清空间，否则编译到一半直接爆盘
-      - name: 极限释放磁盘空间
-        run: |
-          df -h
-          sudo swapoff -a
-          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/local/share/boost \
-                       /usr/share/dotnet /usr/games /var/lib/docker /opt/az \
-                       /usr/local/.ghcup "$AGENT_TOOLSDIRECTORY"
-          sudo apt clean
-          sudo docker system prune -a -f
-          df -h
-
-      - name: 安装依赖
+      - name: Install Dependencies
         run: |
           sudo apt update -y
-          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
+          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
-      - name: 权限与换行符处理
+      - name: Setup SukiSU (Builtin)
         run: |
-          sudo chmod -R 777 $GITHUB_WORKSPACE
-          find . -name "*.sh" -exec dos2unix {} + || true
+          # Ensure target directory exists before curling
+          cd kernel_platform/common || exit 1
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
 
-      - name: 内置 SukiSU (Builtin)
+      - name: Inject Custom Configs
+        run: |
+          # Path for sun_perf.config in Kleaf/Samsung structure
+          FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
+          
+          if [ -f "$FILE" ]; then
+            cat >> "$FILE" << 'EOF'
+
+# Custom Kernel Identity
+CONFIG_LOCALVERSION="-S25-SukiSU-KPM"
+
+# KPM & SukiSU
+CONFIG_KPM=y
+
+# Knox/Security Disable
+CONFIG_KNOX_NCM=n
+CONFIG_UH=n
+CONFIG_RKP=n
+CONFIG_KDP=n
+CONFIG_SECURITY_SELINUX=n
+CONFIG_SECURITY_SELINUX_PERMISSIVE=y
+CONFIG_DM_VERITY=n
+CONFIG_AVB=n
+EOF
+            echo "✅ Configs injected into $FILE"
+          else
+            echo "⚠️ Warning: $FILE not found, check pathing."
+          fi
+
+      - name: Compile Kernel (Kleaf/Bazel)
+        run: |
+          # Using the official build script usually found in Samsung's source
+          # pa3q_chn_openx is the project code; sun is the platform
+          ./kernel_platform/build/build_kernel_GKI.sh pa3q_chn_openx user sun
+
+      - name: Extract Final .config
+        run: |
+          # Bazel outputs are usually in a deep symlinked tree
+          # We look specifically for the .config used during the final link
+          find kernel_platform/out -name ".config" -type f -exec cp {} ./final_kernel.config \; || true
+          
+          if [ -f "./final_kernel.config" ]; then
+             echo "✅ Extracted final .config"
+          else
+             echo "❌ Failed to find .config in out directory"
+          fi
+
+      - name: Package AnyKernel3
+        run: |
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+          
+          # Move images and modules
+          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
+          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
+          
+          mkdir -p AK3/modules
+          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
+          
+          # Include the extracted config for debugging
+          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
+
+          cd AK3
+          zip -r "../S25_GKI_SukiSU_KPM.zip" . -x ".git/*"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25-Kernel-SukiSU
+          path: S25_GKI_SukiSU_KPM.zip
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
