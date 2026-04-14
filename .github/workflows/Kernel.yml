@@ -24,16 +24,73 @@ jobs:
       - name: Configure
         run: |
           FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
-          
-          # 1. 修改自定义内核名称 (CONFIG_LOCALVERSION)
-          # 先删除旧的，再追加新的，确保唯一性
-          sed -i '/CONFIG_LOCALVERSION/d' $FILE
-          printf 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"\n' >> $FILE
-          
-          # 2. 追加其他功能配置
-          printf "CONFIG_KPM=y\n" >> $FILE
-          printf "CONFIG_KNOX_NCM=n\n" >> $FILE
-          printf "CONFIG_UH=n\n" >> $FILE
+
+          # 清空我们要改的配置，避免重复定义报错
+          sed -i '/CONFIG_LOCALVERSION/d' "$FILE"
+          sed -i '/CONFIG_KPM/d' "$FILE"
+          sed -i '/CONFIG_KNOX_NCM/d' "$FILE"
+          sed -i '/CONFIG_UH/d' "$FILE"
+          sed -i '/CONFIG_RKP/d' "$FILE"
+          sed -i '/CONFIG_KDP/d' "$FILE"
+          sed -i '/CONFIG_SECURITY_SELINUX/d' "$FILE"
+          sed -i '/CONFIG_DM_VERITY/d' "$FILE"
+          sed -i '/CONFIG_AVB/d' "$FILE"
+
+          # 统一写到文件末尾（不会重复）
+          echo "" >> "$FILE"
+          echo "# Custom S25 Config" >> "$FILE"
+          echo 'CONFIG_LOCALVERSION="-S25-SukiSU-KPM"' >> "$FILE"
+          echo "CONFIG_KPM=y" >> "$FILE"
+          echo "CONFIG_KNOX_NCM=n" >> "$FILE"
+          echo "CONFIG_UH=n" >> "$FILE"
+          echo "CONFIG_RKP=n" >> "$FILE"
+          echo "CONFIG_KDP=n" >> "$FILE"
+          echo "CONFIG_SECURITY_SELINUX=n" >> "$FILE"
+          echo "CONFIG_SECURITY_SELINUX_PERMISSIVE=y" >> "$FILE"
+          echo "CONFIG_DM_VERITY=n" >> "$FILE"
+          echo "CONFIG_AVB=n" >> "$FILE"
+
+      - name: Compile
+        run: |
+          cd kernel_platform
+          ./tools/bazel clean --expunge || true
+          cd ..
+
+          # 🔥 关键修复：允许配置覆盖，不报错
+          export KCONFIG_WERROR=false
+          export KCONFIG_ALLOW_UNDEFINED=y
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun
+
+      - name: Extract_Config
+        run: |
+          TARGET_PATH=$(find kernel_platform/bazel-out/ -name ".config" 2>/dev/null | head -n 1)
+          if [ -n "$TARGET_PATH" ] && [ -f "$TARGET_PATH" ]; then
+            cp "$TARGET_PATH" ./final_kernel.config
+          else
+            echo "Target config not found"
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
+
+          find kernel_platform/out -name "Image" | head -n 1 | xargs -I{} cp {} AK3/
+          find kernel_platform/out -name "dtbo.img" | head -n 1 | xargs -I{} cp {} AK3/
+
+          mkdir -p AK3/modules
+          find kernel_platform/out -name "*.ko" | xargs -r cp -t AK3/modules/
+
+          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
+
+          cd AK3
+          zip -r "../S25_Build_Output.zip" . -x ".git/*"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: S25_Kernel_Archive
+          path: S25_Build_Output.zip
           printf "CONFIG_RKP=n\n" >> $FILE
           printf "CONFIG_KDP=n\n" >> $FILE
           printf "CONFIG_SECURITY_SELINUX=n\n" >> $FILE
