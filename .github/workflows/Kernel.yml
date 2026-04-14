@@ -14,7 +14,7 @@ jobs:
       - name: 安装依赖
         run: |
           sudo apt update -y
-          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
+          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
       - name: 权限与换行符处理
         run: |
@@ -25,79 +25,62 @@ jobs:
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
-          cd $GITHUB_WORKSPACE
 
-      # ==========================================
-      # 🔥 核心：只修改 sun_perf.config，无任何动态修改
-      # ==========================================
       - name: 写入配置到 sun_perf.config
         run: |
           FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
           
-          cat >> "$FILE" << 'EOF'
-
-# 自定义内核名称
-CONFIG_LOCALVERSION="-S25-SukiSU-KPM"
-
-# 开启 KPM
-CONFIG_KPM=y
-
-# 强制关闭 Knox 全套
-CONFIG_KNOX_NCM=n
-CONFIG_UH=n
-CONFIG_RKP=n
-CONFIG_KDP=n
-
-# 关闭 SELinux
-CONFIG_SECURITY_SELINUX=n
-CONFIG_SECURITY_SELINUX_PERMISSIVE=y
-
-# 关闭验证
-CONFIG_DM_VERITY=n
-CONFIG_AVB=n
-EOF
+          # 直接使用 printf 写入，这种写法对 YAML 最友好，不会产生解析歧义
+          printf "\n# Custom Kernel Configs\n" >> "$FILE"
+          printf "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"\n" >> "$FILE"
+          printf "CONFIG_KPM=y\n" >> "$FILE"
+          printf "CONFIG_KNOX_NCM=n\n" >> "$FILE"
+          printf "CONFIG_UH=n\n" >> "$FILE"
+          printf "CONFIG_RKP=n\n" >> "$FILE"
+          printf "CONFIG_KDP=n\n" >> "$FILE"
+          printf "CONFIG_SECURITY_SELINUX=n\n" >> "$FILE"
+          printf "CONFIG_SECURITY_SELINUX_PERMISSIVE=y\n" >> "$FILE"
+          printf "CONFIG_DM_VERITY=n\n" >> "$FILE"
+          printf "CONFIG_AVB=n\n" >> "$FILE"
+          
+          echo "✅ Config successfully appended to $FILE"
 
       - name: 编译内核
         run: |
           cd kernel_platform
-          tools/bazel clean --expunge || true
+          # 清理缓存以确保配置生效
+          ./tools/bazel clean --expunge || true
           cd ..
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      # ==========================================
-      # 🟢 编译完成后，自动提取最终 .config（仅用于对表，不影响编译）
-      # ==========================================
-      - name: 提取最终 .config 用于对表
+      - name: 提取最终 .config
         run: |
-          FINAL_CONFIG=$(find kernel_platform/bazel-out/ -name ".config" 2>/dev/null | head -n 1)
+          # 优先搜索产物目录 out，这是 Kleaf 编译后的汇总点
+          FINAL_CONFIG=$(find kernel_platform/out -name ".config" -type f | head -n 1)
           
-          if [ -f "$FINAL_CONFIG" ]; then
+          if [ -n "$FINAL_CONFIG" ]; then
               cp "$FINAL_CONFIG" ./final_kernel.config
-              echo "✅ 已提取最终配置用于核对：final_kernel.config"
+              echo "✅ Extracted config: $FINAL_CONFIG"
           else
-              echo "❌ 未找到 .config 文件"
+              echo "❌ ERROR: .config file not found!"
               exit 1
           fi
 
-      # ==========================================
-      # 🟢 打包 AnyKernel3（包含最终 .config 让你核对）
-      # ==========================================
       - name: 打包 AnyKernel3
         run: |
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
           
-          # 复制内核镜像
-          find . -name "Image" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
-          find . -name "dtbo.img" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
+          # 拷贝内核镜像
+          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
+          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
           
-          # 复制模块
+          # 拷贝模块
           mkdir -p AK3/modules
-          find . -name "*.ko" -type f | grep -v AK3 | xargs -r cp -t AK3/modules/
+          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
           
-          # 🔥 把最终配置复制进包，方便你解压对表
-          cp ./final_kernel.config AK3/
+          # 拷贝用于对表的 config
+          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
           
-          # 打包
           cd AK3
           zip -r "../S25_GKI_SukiSU_KPM.zip" . -x ".git/*"
 
@@ -106,29 +89,3 @@ EOF
         with:
           name: S25_GKI_SukiSU_KPM
           path: S25_GKI_SukiSU_KPM.zip
-              fi
-              sleep 0.2
-            done
-          ) &
-          
-          # 直接运行你的正常编译，不等待、不prepare
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun
-
-      - name: 打包 AnyKernel3
-        run: |
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-
-          find . -name "Image" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
-          find . -name "dtbo.img" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
-
-          mkdir -p AK3/modules
-          find . -name "*.ko" -type f | grep -v AK3 | xargs -r cp -t AK3/modules/
-
-          cd AK3
-          zip -r "../S25_GKI_SukiSU.zip" . -x ".git/*"
-
-      - name: 上传内核
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25_GKI_SukiSU
-          path: S25_GKI_SukiSU.zip
