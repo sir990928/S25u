@@ -16,52 +16,45 @@ jobs:
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
       - name: Fix line endings
-        run: find . -name "*.sh" -exec dos2unix {} + || true
+        run: |
+          find . -name "*.sh" -exec dos2unix {} + || true
 
       - name: Setup SukiSU
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
 
-      - name: Inject full config
+      - name: Inject config
         run: |
-          for f in \
-            kernel_platform/build.config.allmodconfig \
-            kernel_platform/msm-kernel/build.config.allmodconfig \
-          ; do
+          for f in kernel_platform/build.config.allmodconfig kernel_platform/msm-kernel/build.config.allmodconfig; do
             if [ -f "$f" ]; then
-              cat >>"$f" <<'EOF'
-
+              echo '
 DEFCONFIG=allmodconfig
-
 POST_DEFCONFIG_CMDS="update_config"
-function update_config() {
+update_config() {
     ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
-         -e UNWINDER_FRAME_POINTER \
-         -d WERROR \
-         -d SAMPLES \
-         -d BPFILTER \
-         -e RANDSTRUCT_NONE \
-         -d RANDSTRUCT_FULL \
-         -d RANDSTRUCT \
-         -d AF_RXRPC \
-         -d AFS_FS \
-         -e KPM \
-         -d KNOX_NCM \
-         -d UH \
-         -d RKP \
-         -d KDP \
-         -d SECURITY_DEFEX \
-         -d INTEGRITY \
-         -d FIVE \
-         -d TRIM_UNUSED_KSYMS
-
+        -e UNWINDER_FRAME_POINTER \
+        -d WERROR \
+        -d SAMPLES \
+        -d BPFILTER \
+        -e RANDSTRUCT_NONE \
+        -d RANDSTRUCT_FULL \
+        -d RANDSTRUCT \
+        -d AF_RXRPC \
+        -d AFS_FS \
+        -e KPM \
+        -d KNOX_NCM \
+        -d UH \
+        -d RKP \
+        -d KDP \
+        -d SECURITY_DEFEX \
+        -d INTEGRITY \
+        -d FIVE \
+        -d TRIM_UNUSED_KSYMS
     echo "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" >> ${OUT_DIR}/.config
-
-    (cd ${OUT_DIR} && \
-     make O=${OUT_DIR} $archsubarch CROSS_COMPILE=${CROSS_COMPILE} ${TOOL_ARGS} ${MAKE_ARGS} olddefconfig)
+    (cd ${OUT_DIR} && make O=${OUT_DIR} $archsubarch CROSS_COMPILE=${CROSS_COMPILE} ${TOOL_ARGS} ${MAKE_ARGS} olddefconfig)
 }
-EOF
+' >> "$f"
             fi
           done
 
