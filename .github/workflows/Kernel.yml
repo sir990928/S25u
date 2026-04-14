@@ -1,7 +1,7 @@
 name: S25_GKI_Build
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -23,14 +23,9 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
 
-      - name: Inject to common & msm-kernel allmodconfig
+      - name: Patch both allmodconfig
         run: |
-          for FILE in \
-            kernel_platform/common/build.config.allmodconfig \
-            kernel_platform/msm-kernel/build.config.allmodconfig
-          do
-            if [ -f "$FILE" ]; then
-              cat >> "$FILE" <<'EOF'
+          cat > append.txt <<'EOF'
 
 POST_DEFCONFIG_CMDS="update_config"
 update_config() {
@@ -60,7 +55,12 @@ update_config() {
      make O=${OUT_DIR} $archsubarch CROSS_COMPILE=${CROSS_COMPILE} ${TOOL_ARGS} ${MAKE_ARGS} olddefconfig)
 }
 EOF
-            fi
+
+          for FILE in \
+            kernel_platform/common/build.config.allmodconfig \
+            kernel_platform/msm-kernel/build.config.allmodconfig
+          do
+            [ -f "$FILE" ] && cat append.txt >> "$FILE"
           done
 
       - name: Build kernel
@@ -82,4 +82,5 @@ EOF
         with:
           name: S25_Build
           path: output/
+
 
