@@ -1,4 +1,4 @@
-Name: S25 GKI SukiSU + Knox Patch + Config Export
+name: S25 GKI SukiSU + 禁用Knox + 自动提取Config对表
 on:
   push:
     branches: [ main ]
@@ -8,156 +8,104 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout 仓库代码
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: 安装依赖
         run: |
           sudo apt update -y
-          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
+          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix
 
-      - name: Setup SukiSU (Builtin)
+      - name: 权限与换行符处理
         run: |
-          # Ensure target directory exists before curling
-          cd kernel_platform/common || exit 1
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
+          sudo chmod -R 777 $GITHUB_WORKSPACE
+          find . -name "*.sh" -exec dos2unix {} + || true
 
-      - name: Inject Custom Configs
-        run: |
-          # Path for sun_perf.config in Kleaf/Samsung structure
-          FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
-          
-          if [ -f "$FILE" ]; then
-            cat >> "$FILE" << 'EOF'
-
-# Custom Kernel Identity
-CONFIG_LOCALVERSION="-S25-SukiSU-KPM"
-
-# KPM & SukiSU
-CONFIG_KPM=y
-
-# Knox/Security Disable
-CONFIG_KNOX_NCM=n
-CONFIG_UH=n
-CONFIG_RKP=n
-CONFIG_KDP=n
-CONFIG_SECURITY_SELINUX=n
-CONFIG_SECURITY_SELINUX_PERMISSIVE=y
-CONFIG_DM_VERITY=n
-CONFIG_AVB=n
-EOF
-            echo "✅ Configs injected into $FILE"
-          else
-            echo "⚠️ Warning: $FILE not found, check pathing."
-          fi
-
-      - name: Compile Kernel (Kleaf/Bazel)
-        run: |
-          # Using the official build script usually found in Samsung's source
-          # pa3q_chn_openx is the project code; sun is the platform
-          ./kernel_platform/build/build_kernel_GKI.sh pa3q_chn_openx user sun
-
-      - name: Extract Final .config
-        run: |
-          # Bazel outputs are usually in a deep symlinked tree
-          # We look specifically for the .config used during the final link
-          find kernel_platform/out -name ".config" -type f -exec cp {} ./final_kernel.config \; || true
-          
-          if [ -f "./final_kernel.config" ]; then
-             echo "✅ Extracted final .config"
-          else
-             echo "❌ Failed to find .config in out directory"
-          fi
-
-      - name: Package AnyKernel3
-        run: |
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          
-          # Move images and modules
-          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
-          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
-          
-          mkdir -p AK3/modules
-          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
-          
-          # Include the extracted config for debugging
-          [ -f "./final_kernel.config" ] && cp ./final_kernel.config AK3/
-
-          cd AK3
-          zip -r "../S25_GKI_SukiSU_KPM.zip" . -x ".git/*"
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25-Kernel-SukiSU
-          path: S25_GKI_SukiSU_KPM.zip
+      - name: 内置 SukiSU (Builtin)
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           cd $GITHUB_WORKSPACE
 
-      # 编译 + 动态修改 .config
-      - name: 编译内核 + 动态修改 .config
+      # ==========================================
+      # 🔥 核心：只修改 sun_perf.config，无任何动态修改
+      # ==========================================
+      - name: 写入配置到 sun_perf.config
         run: |
-          (
-            while true; do
-              CONFIG_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
-              if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
-                echo "✅ 捕获到 .config: $CONFIG_PATH"
-                sed -i 's/CONFIG_KNOX=y/CONFIG_KNOX=n/g' "$CONFIG_PATH"
-                sed -i 's/CONFIG_SECURITY_SELINUX=y/CONFIG_SECURITY_SELINUX=n/g' "$CONFIG_PATH"
-                sed -i 's/CONFIG_DM_VERITY=y/CONFIG_DM_VERITY=n/g' "$CONFIG_PATH"
-                sed -i 's/CONFIG_AVB=y/CONFIG_AVB=n/g' "$CONFIG_PATH"
-                echo "CONFIG_KPM=y" >> "$CONFIG_PATH"
-                echo "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" >> "$CONFIG_PATH"
-                break
-              fi
-              sleep 0.2
-            done
-          ) &
+          FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
+          
+          cat >> "$FILE" << 'EOF'
 
-          # 清理旧 bazel 缓存，避免空间占用
+# 自定义内核名称
+CONFIG_LOCALVERSION="-S25-SukiSU-KPM"
+
+# 开启 KPM
+CONFIG_KPM=y
+
+# 强制关闭 Knox 全套
+CONFIG_KNOX_NCM=n
+CONFIG_UH=n
+CONFIG_RKP=n
+CONFIG_KDP=n
+
+# 关闭 SELinux
+CONFIG_SECURITY_SELINUX=n
+CONFIG_SECURITY_SELINUX_PERMISSIVE=y
+
+# 关闭验证
+CONFIG_DM_VERITY=n
+CONFIG_AVB=n
+EOF
+
+      - name: 编译内核
+        run: |
           cd kernel_platform
           tools/bazel clean --expunge || true
           cd ..
-
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
+      # ==========================================
+      # 🟢 编译完成后，自动提取最终 .config（仅用于对表，不影响编译）
+      # ==========================================
+      - name: 提取最终 .config 用于对表
+        run: |
+          FINAL_CONFIG=$(find kernel_platform/bazel-out/ -name ".config" 2>/dev/null | head -n 1)
+          
+          if [ -f "$FINAL_CONFIG" ]; then
+              cp "$FINAL_CONFIG" ./final_kernel.config
+              echo "✅ 已提取最终配置用于核对：final_kernel.config"
+          else
+              echo "❌ 未找到 .config 文件"
+              exit 1
+          fi
+
+      # ==========================================
+      # 🟢 打包 AnyKernel3（包含最终 .config 让你核对）
+      # ==========================================
       - name: 打包 AnyKernel3
         run: |
           git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-
+          
+          # 复制内核镜像
           find . -name "Image" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
           find . -name "dtbo.img" -type f | grep -v AK3 | head -n 1 | xargs -I{} cp {} AK3/
-
+          
+          # 复制模块
           mkdir -p AK3/modules
           find . -name "*.ko" -type f | grep -v AK3 | xargs -r cp -t AK3/modules/
-
+          
+          # 🔥 把最终配置复制进包，方便你解压对表
+          cp ./final_kernel.config AK3/
+          
+          # 打包
           cd AK3
-          zip -r "../S25_GKI_SukiSU.zip" . -x ".git/*"
+          zip -r "../S25_GKI_SukiSU_KPM.zip" . -x ".git/*"
 
-      - name: 上传内核
+      - name: 上传内核包
         uses: actions/upload-artifact@v4
         with:
-          name: S25_GKI_SukiSU
-          path: S25_GKI_SukiSU.zip
-              if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
-                
-                echo "✅ 捕获到 .config: $CONFIG_PATH"
-                
-                # 禁用安全
-                sed -i 's/CONFIG_KNOX=y/CONFIG_KNOX=n/g' "$CONFIG_PATH"
-                sed -i 's/CONFIG_SECURITY_SELINUX=y/CONFIG_SECURITY_SELINUX=n/g' "$CONFIG_PATH"
-                sed -i 's/CONFIG_DM_VERITY=y/CONFIG_DM_VERITY=n/g' "$CONFIG_PATH"
-                sed -i 's/CONFIG_AVB=y/CONFIG_AVB=n/g' "$CONFIG_PATH"
-                
-                # 开启 KPM
-                echo "CONFIG_KPM=y" >> "$CONFIG_PATH"
-                
-                # 自定义内核名称
-                echo "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" >> "$CONFIG_PATH"
-                
-                break
+          name: S25_GKI_SukiSU_KPM
+          path: S25_GKI_SukiSU_KPM.zip
               fi
               sleep 0.2
             done
