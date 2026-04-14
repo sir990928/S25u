@@ -18,24 +18,21 @@ jobs:
 
       - name: 环境预处理
         run: |
-          # 仅处理脚本换行符，跳过权限操作以避免悬空软链接报错
           find . -name "*.sh" -type f -exec dos2unix {} + || true
 
       - name: 配置 SukiSU
         run: |
           cd kernel_platform/common
-          # 优先使用本地脚本，显式调用 bash 绕过权限执行
           if [ -f "setup.sh" ]; then
             bash setup.sh builtin
           else
             curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           fi
 
-      - name: 修改内核名与注入功能配置
+      - name: 强制注入碎片配置
         run: |
           FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
           
-          # 定义需要强制写入的配置数组
           configs=(
             "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\""
             "CONFIG_KPM=y"
@@ -45,55 +42,49 @@ jobs:
             "CONFIG_KDP=n"
           )
 
-          # 核心修复逻辑：先删后写，避免 Bazel 触发“重定义”警告导致报错
           for cfg in "${configs[@]}"; do
             key=$(echo "$cfg" | cut -d'=' -f1)
-            # 删除文件中已存在的该 key 行（防止重定义警告）
-            sed -i "/$key/d" $FILE
-            # 追加新配置
+            sed -i "/$key/d" $FILE || true
             echo "$cfg" >> $FILE
           done
-          
-          echo "✅ 冲突项已清理，功能配置注入完成"
+          echo "✅ 已将碎片配置强制写入 $FILE"
 
-      - name: 执行内核编译
+      - name: 执行编译 (忽略校验报错)
         run: |
           cd kernel_platform
-          # 显式使用 python3 调用工具，绕过 chmod 限制
           python3 ./tools/bazel clean --expunge || true
           cd ..
           export KCONFIG_WERROR=false
-          # 显式使用 bash 运行主编译脚本，并传递参数
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false
+          # 使用 || true 确保即使因为碎片不匹配报错，工作流也不中断，方便下一步提取
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun --kconfig_werror=false || echo "⚠️ 编译由于配置校验失败中断，准备提取残留 Config"
 
-      - name: 提取指定路径 Config
+      - name: 提取残留 Config
         run: |
-          # 锁定沙盒路径提取最终生成的 .config
-          TARGET_PATH=$(find kernel_platform/bazel-out/k8-fastbuild/bin/common -name ".config" 2>/dev/null | head -n 1)
+          # 在整个 bazel-out 目录中深挖所有生成的 .config
+          # 重点寻找包含我们自定义内核名的那个文件
+          TARGET_PATH=$(find kernel_platform/bazel-out -name ".config" -exec grep -l "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" {} + | head -n 1)
+          
           if [ -n "$TARGET_PATH" ]; then
             cp "$TARGET_PATH" ./final_kernel.config
-            echo "✅ 成功提取 .config"
+            echo "✅ 成功捞出目标配置: $TARGET_PATH"
           else
-            echo "❌ 提取失败：请检查编译阶段日志中的错误信息"
-            exit 1
+            echo "❌ 依然未找到匹配的 .config，尝试捞取任意生成的配置"
+            TARGET_PATH=$(find kernel_platform/bazel-out -name ".config" 2>/dev/null | head -n 1)
+            [ -n "$TARGET_PATH" ] && cp "$TARGET_PATH" ./final_kernel.config && echo "✅ 捞出候选配置: $TARGET_PATH"
           fi
 
-      - name: 打包产物
+      - name: 打包与上传
+        if: always() # 确保即便上面报错也尝试打包
         run: |
-          git clone --depth 1 -b s25 https://github.com/fei-ke/AnyKernel3.git AK3
-          find kernel_platform/out -name "Image" -exec cp {} AK3/ \;
-          find kernel_platform/out -name "dtbo.img" -exec cp {} AK3/ \;
-          mkdir -p AK3/modules
-          find kernel_platform/out -name "*.ko" -exec cp {} AK3/modules/ \;
-          # 将最终 Config 放入压缩包，方便你手动核对
-          if [ -f "./final_kernel.config" ]; then
-            cp ./final_kernel.config AK3/
-          fi
-          cd AK3
-          zip -r "../S25_Flash_Kernel.zip" . -x ".git/*"
-
-      - name: 上传结果
+          mkdir -p output
+          [ -f "./final_kernel.config" ] && cp ./final_kernel.config output/
+          # 尝试搜寻可能已经生成的 Image
+          find kernel_platform/out -name "Image" -exec cp {} output/ \; || true
+          cd output
+          zip -r "../S25_Debug_Artifact.zip" .
+          
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Kernel_Artifact
-          path: S25_Flash_Kernel.zip
+          name: S25_Debug_Configs
+          path: S25_Debug_Artifact.zip
