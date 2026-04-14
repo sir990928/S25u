@@ -59,7 +59,7 @@ jobs:
         if: always()
         run: |
           mkdir -p output
-          find kernel_platform/bazel-out -name ".config" -exec cp {} output/ \;
+          find kernel_platform/bazel-out/k8-fastbuild -name .config -exec cp {} output/ \;
           find kernel_platform/out -name "Image*" -exec cp {} output/ \;
 
       - name: Upload
