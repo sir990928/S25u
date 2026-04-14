@@ -29,11 +29,9 @@ jobs:
             curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           fi
 
-      - name: 注入禁用与启用配置（无重复版）
+      - name: 注入配置
         run: |
           FILE="kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config"
-          
-          # 先删掉旧的，避免重复
           sed -i '/CONFIG_LOCALVERSION="-S25/d' $FILE
           sed -i '/CONFIG_KPM/d' $FILE
           sed -i '/CONFIG_KNOX_NCM/d' $FILE
@@ -44,31 +42,26 @@ jobs:
           sed -i '/CONFIG_INTEGRITY/d' $FILE
           sed -i '/CONFIG_FIVE/d' $FILE
           sed -i '/CONFIG_TRIM_UNUSED_KSYMS/d' $FILE
+          echo "" >> $FILE
+          echo "# Custom Config" >> $FILE
+          echo "CONFIG_LOCALVERSION=\"-S25-SukiSU-KPM\"" >> $FILE
+          echo "CONFIG_KPM=y" >> $FILE
+          echo "CONFIG_KNOX_NCM=n" >> $FILE
+          echo "CONFIG_UH=n" >> $FILE
+          echo "CONFIG_RKP=n" >> $FILE
+          echo "CONFIG_KDP=n" >> $FILE
+          echo "CONFIG_SECURITY_DEFEX=n" >> $FILE
+          echo "CONFIG_INTEGRITY=n" >> $FILE
+          echo "CONFIG_FIVE=n" >> $FILE
+          echo "CONFIG_TRIM_UNUSED_KSYMS=n" >> $FILE
 
-          # 统一追加
-          cat <<EOF >> $FILE
-
-# Custom Config
-CONFIG_LOCALVERSION="-S25-SukiSU-KPM"
-CONFIG_KPM=y
-CONFIG_KNOX_NCM=n
-CONFIG_UH=n
-CONFIG_RKP=n
-CONFIG_KDP=n
-CONFIG_SECURITY_DEFEX=n
-CONFIG_INTEGRITY=n
-CONFIG_FIVE=n
-CONFIG_TRIM_UNUSED_KSYMS=n
-EOF
-
-      - name: 执行内核编译（在根目录执行，路径完全正确）
+      - name: 执行内核编译
         run: |
           export KCONFIG_WERROR=false
           export SKIP_DEFCONFIG_VALIDATION=true
-          # 就在根目录直接执行，不进任何文件夹
           bash build_kernel_GKI.sh pa3q_chn_openx user sun --nocheck_defconfig || true
 
-      - name: 提取 .config 和镜像
+      - name: 提取产物
         if: always()
         run: |
           mkdir -p output
@@ -80,7 +73,7 @@ EOF
         run: |
           zip -r S25_output.zip output/
 
-      - name: 上传产物
+      - name: 上传
         if: always()
         uses: actions/upload-artifact@v4
         with:
