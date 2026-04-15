@@ -81,19 +81,16 @@ jobs:
           find . -name "Image" -o -name "Image.gz" | head -1 | xargs cp -t AnyKernel3/
           find . -name "dtbo.img" | head -1 | xargs cp -t AnyKernel3/
 
-          # 复制所有 ko 模块到 AnyKernel3/modules
-          mkdir -p AnyKernel3/modules
-          find . -name "*.ko" -type f | xargs cp -t AnyKernel3/modules/
+          # 模块按正规路径：modules/lib/modules
+          mkdir -p AnyKernel3/modules/lib/modules/
+          find . -name "*.ko" -type f | xargs cp -t AnyKernel3/modules/lib/modules/
 
-          # 根目录生成 zip
+          # 打包
           cd AnyKernel3
           zip -r9 ../S25-GKI-SukiSU.zip ./*
           cd ..
           
-          # 移入上传目录
           mv S25-GKI-SukiSU.zip output/
-
-          # 同时保存 .config 方便核对
           find kernel_platform/bazel-out/k8-fastbuild/bin/common/ -name ".config" -exec cp {} output/ \; 2>/dev/null
 
       - name: Upload artifact
