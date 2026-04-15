@@ -26,55 +26,68 @@ jobs:
 
       - name: Hack Build System & Inject Config
         run: |
-          # 1. 定位关键配置文件
+          # 1. 定位所有关键配置文件
           MSM_COMMON=$(find . -name "build.config.msm.common" | head -1)
+          GKI_DEFCONFIG=$(find . -name "gki_defconfig" | head -1)
           SUN_PERF=$(find . -name "sun_perf.config" | head -1)
           
+          # 2. 找到源码根目录（通常是 msm-kernel）
+          KERNEL_ROOT=$(dirname $(dirname $(dirname $(dirname "$SUN_PERF"))))
+          VENDOR_DIR="$KERNEL_ROOT/arch/arm64/configs/vendor"
+          
           echo "MSM_COMMON: $MSM_COMMON"
-          echo "SUN_PERF: $SUN_PERF"
+          echo "VENDOR_DIR: $VENDOR_DIR"
 
-          # 2. 核心修复：函数注入 return 0，彻底绕过所有校验逻辑
-          # 在函数定义的第一行后插入 return 0，保证脚本语法完整且校验永远成功
+          # 3. 核心修复：手动补齐三星 Bazel 寻找的路径
+          mkdir -p "$VENDOR_DIR"
+          if [ -f "$SUN_PERF" ]; then
+             cp "$SUN_PERF" "$VENDOR_DIR/sun-gki_defconfig"
+             echo "Created vendor/sun-gki_defconfig from sun_perf.config"
+          fi
+
+          # 4. 函数打桩，跳过合并校验
           sed -i '/function merge_defconfig_fragments() {/a \  return 0' "$MSM_COMMON"
           sed -i '/function check_merged_defconfig() {/a \  return 0' "$MSM_COMMON"
           
-          # 3. 预处理 sun_perf.config（清理旧项，防止冲突导致编译警告）
+          # 5. 准备自定义配置
+          CUSTOM_CONFIGS="
+CONFIG_KSU=y
+CONFIG_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_KNOX_NCM=n
+CONFIG_UH=n
+CONFIG_RKP=n
+CONFIG_KDP=n
+CONFIG_SECURITY_DEFEX=n
+CONFIG_FIVE=n
+CONFIG_SEC_RESTRICT_SETUID=n
+CONFIG_SEC_RESTRICT_FORK=n
+CONFIG_SEC_RESTRICT_ROOT_ACCESS=n
+CONFIG_LOCALVERSION=\"-S25-GKI-SukiSU\""
+
+          # 6. 多路注入：GKI基础、Sun专用、Vendor专用
           KEYS="CONFIG_KSU CONFIG_KPROBES CONFIG_KPROBE_EVENTS CONFIG_OVERLAY_FS CONFIG_KNOX_NCM CONFIG_UH CONFIG_RKP CONFIG_KDP CONFIG_SECURITY_DEFEX CONFIG_FIVE CONFIG_SEC_RESTRICT_SETUID CONFIG_SEC_RESTRICT_FORK CONFIG_SEC_RESTRICT_ROOT_ACCESS CONFIG_LOCALVERSION"
-          for key in $KEYS; do
-            sed -i "s/^$key=/# $key=/g" "$SUN_PERF" || true
-            sed -i "s/^# $key=/# $key=/g" "$SUN_PERF" || true
+          
+          for target in "$GKI_DEFCONFIG" "$SUN_PERF" "$VENDOR_DIR/sun-gki_defconfig"; do
+            if [ -f "$target" ]; then
+              echo "Patching $target..."
+              for key in $KEYS; do
+                sed -i "s/^$key=/# $key=/g" "$target" || true
+              done
+              printf "%b\n" "$CUSTOM_CONFIGS" >> "$target"
+            fi
           done
-
-          # 4. 注入自定义配置 (使用 printf 确保换行符兼容性)
-          printf "\n# --- Custom Configs for S25u ---\n" >> "$SUN_PERF"
-          printf "CONFIG_KSU=y\n" >> "$SUN_PERF"
-          printf "CONFIG_KPROBES=y\n" >> "$SUN_PERF"
-          printf "CONFIG_KPROBE_EVENTS=y\n" >> "$SUN_PERF"
-          printf "CONFIG_OVERLAY_FS=y\n" >> "$SUN_PERF"
-          printf "CONFIG_KNOX_NCM=n\n" >> "$SUN_PERF"
-          printf "CONFIG_UH=n\n" >> "$SUN_PERF"
-          printf "CONFIG_RKP=n\n" >> "$SUN_PERF"
-          printf "CONFIG_KDP=n\n" >> "$SUN_PERF"
-          printf "CONFIG_SECURITY_DEFEX=n\n" >> "$SUN_PERF"
-          printf "CONFIG_FIVE=n\n" >> "$SUN_PERF"
-          printf "CONFIG_SEC_RESTRICT_SETUID=n\n" >> "$SUN_PERF"
-          printf "CONFIG_SEC_RESTRICT_FORK=n\n" >> "$SUN_PERF"
-          printf "CONFIG_SEC_RESTRICT_ROOT_ACCESS=n\n" >> "$SUN_PERF"
-          printf 'CONFIG_LOCALVERSION="-S25-GKI-SukiSU"\n' >> "$SUN_PERF"
-
-          echo "Inject Success. Tail of config:"
-          tail -n 20 "$SUN_PERF"
 
       - name: Build kernel
         run: |
-          # 环境变量双重保险
           export KCONFIG_WERROR=false
           export SKIP_DEFCONFIG_VALIDATION=1
           export SKIP_CONFIG_CHECK=1
           export SKIP_ABI_CHECK=1
           export GKI_KMI_ENFORCED=0
           
-          # 开始构建
+          # 执行编译
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: Pack with AnyKernel3
@@ -84,24 +97,21 @@ jobs:
             git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
           fi
 
-          # 全局精准捕捉产物
+          # 全局搜索产物
           IMAGE=$(find kernel_platform/bazel-out -name "Image" -type f | head -1)
           [ -z "$IMAGE" ] && IMAGE=$(find kernel_platform/bazel-out -name "Image.gz" -type f | head -1)
           
           if [ -n "$IMAGE" ]; then
             cp "$IMAGE" AnyKernel3/
-            # 拷贝 DTBO 和所有模块
             find kernel_platform/bazel-out -name "dtbo.img" -type f -exec cp {} AnyKernel3/ \;
             mkdir -p AnyKernel3/modules/lib/modules/
             find kernel_platform/bazel-out -name "*.ko" -type f -exec cp {} AnyKernel3/modules/lib/modules/ \;
             
-            # 打包 ZIP
             cd AnyKernel3 && zip -r9 ../S25-GKI-SukiSU.zip ./* && cd ..
             mv S25-GKI-SukiSU.zip output/
-            # 备份 .config 方便后续调试
             find kernel_platform/bazel-out -name ".config" -type f -exec cp {} output/final_config_bak \; 2>/dev/null || true
           else
-            echo "Error: Image not found. Build may have failed." && exit 1
+            echo "Error: Image not found." && exit 1
           fi
 
       - name: Upload Artifacts
