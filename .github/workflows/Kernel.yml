@@ -24,55 +24,6 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 核心补丁：拦截/注入/更名
-        run: |
-          # 1. 深度拦截 merge_config.sh
-          # 让它在找不到碎片文件（如 sun-gki_defconfig）时只告警不退出
-          MERGE_SCRIPT=$(find . -name "merge_config.sh" | head -1)
-          if [ -f "$MERGE_SCRIPT" ]; then
-            echo "正在修补合并脚本逻辑: $MERGE_SCRIPT"
-            sed -i '/if \[ ! -r "$ORIG_MERGE_FILE" \]; then/,/fi/c\  if [ ! -r "$ORIG_MERGE_FILE" ]; then echo "Warning: Fragment missing, skipping..."; continue; fi' "$MERGE_SCRIPT"
-            sed -i 's/exit 1 # base file check/echo "Base missing!" #/g' "$MERGE_SCRIPT"
-          fi
-
-          # 2. 清理干扰：防止三星脚本在编译后期强制修改我们的内核名
-          echo "正在清理 build.config 中的名称强制重写..."
-          find . -name "build.config.*" -exec sed -i '/CONFIG_LOCALVERSION/d' {} +
-
-          # 3. 注入配置与自定义内核名
-          GKI_CONF=$(find . -name "gki_defconfig" | head -1)
-          SUN_CONF=$(find . -name "sun_perf.config" | head -1)
-          
-          # 【你可以在这里修改你的专属内核名字】
-          CUSTOM_NAME="-Feng-Custom-v1.0"
-
-          for target in "$GKI_CONF" "$SUN_CONF"; do
-            if [ -f "$target" ]; then
-              echo "正在配置 $target ..."
-              {
-                echo "CONFIG_KSU=y"
-                echo "CONFIG_KPROBES=y"
-                echo "CONFIG_KPROBE_EVENTS=y"
-                echo "CONFIG_OVERLAY_FS=y"
-                # 写入自定义内核名
-                echo "CONFIG_LOCALVERSION=\"$CUSTOM_NAME\""
-                # 关闭干扰安全项
-                echo "CONFIG_KNOX_NCM=n"
-                echo "CONFIG_UH=n"
-                echo "CONFIG_RKP=n"
-                echo "CONFIG_KDP=n"
-                echo "CONFIG_SECURITY_DEFEX=n"
-              } >> "$target"
-            fi
-          done
-
-          # 4. 废除三星后置校验逻辑
-          MSM_COMMON=$(find . -name "build.config.msm.common" | head -1)
-          if [ -f "$MSM_COMMON" ]; then
-            sed -i '/function merge_defconfig_fragments() {/a \  return 0' "$MSM_COMMON"
-            sed -i '/function check_merged_defconfig() {/a \  return 0' "$MSM_COMMON"
-          fi
-
       - name: 开始 Bazel 构建
         run: |
           export KCONFIG_WERROR=false
