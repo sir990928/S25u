@@ -19,14 +19,18 @@ export PROJECT_NAME=${MODEL}
 export REGION=$(echo $BUILD_TARGET | cut -d'_' -f2)
 export CARRIER=$(echo $BUILD_TARGET | cut -d'_' -f3)
 export TARGET_BUILD_VARIANT=$2
-		
-		
+
 #2. sm8650 common config
 CHIPSET_NAME=$3
+# 自定义 defconfig（第四个参数，不传则默认 s25_gki.defconfig）
+export USER_DEFCONFIG=${4:-s25_gki.defconfig}
 
 export ANDROID_BUILD_TOP=$(pwd)
 export TARGET_PRODUCT=perf
 export TARGET_BOARD_PLATFORM=gki
+
+# 强制使用你指定的 defconfig
+export KERNEL_DEFCONFIG=${USER_DEFCONFIG}
 
 export ANDROID_PRODUCT_OUT=${ANDROID_BUILD_TOP}/out/target/product/${MODEL}
 export OUT_DIR=${ANDROID_BUILD_TOP}/out/msm-${CHIPSET_NAME}-${CHIPSET_NAME}-${TARGET_PRODUCT}
@@ -47,4 +51,6 @@ export KBUILD_EXT_MODULES="\
 
 #3. build kernel
 cd ./kernel_platform/
+echo "✅ 使用内核配置：${KERNEL_DEFCONFIG}"
 RECOMPILE_KERNEL=1 ./build/android/prepare_vendor.sh ${CHIPSET_NAME} ${TARGET_PRODUCT} gki | tee -a ../build.log
+
