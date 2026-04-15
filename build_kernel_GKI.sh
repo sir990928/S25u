@@ -23,7 +23,7 @@ export TARGET_BUILD_VARIANT=$2
 #2. sm8650 common config
 CHIPSET_NAME=$3
 # 自定义 defconfig（第四个参数，不传则默认 s25_gki.defconfig）
-export USER_DEFCONFIG=${4:-s25_gki.defconfig}
+export USER_DEFCONFIG=${4:-s25_gki_defconfig}
 
 export ANDROID_BUILD_TOP=$(pwd)
 export TARGET_PRODUCT=perf
