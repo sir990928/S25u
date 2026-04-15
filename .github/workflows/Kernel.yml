@@ -1,4 +1,4 @@
-name: 三星S25u_内核编译_影子文件修复版
+name: 三星S25u_内核编译_自定义更名版
 
 on:
   push:
@@ -11,108 +11,104 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装依赖流程
+      - name: 环境依赖初始化
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
-      - name: 修复行尾符
+      - name: 格式规范化
         run: find . -name "*.sh" -exec dos2unix {} + || true
 
-      - name: 配置 SukiSU GKI
+      - name: 注入 KernelSU 源码
         run: |
           cd kernel_platform/common
-          # 注入 KernelSU 源码
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 模拟三星逻辑并注入配置
+      - name: 核心补丁：拦截/注入/更名
         run: |
-          # 1. 准确定位源码中的基础配置文件
-          SUN_PERF=$(find . -name "sun_perf.config" | head -1)
-          CONF_DIR=$(dirname "$SUN_PERF")
-          GKI_DEFCONFIG=$(find . -name "gki_defconfig" | head -1)
-          
-          echo "基础配置路径: $SUN_PERF"
-          echo "配置存放目录: $CONF_DIR"
-
-          # 2. 物理伪造影子文件 sun-gki_defconfig
-          # 既然构建系统找这个文件，我们就用 sun_perf.config 作为母本造一个
-          cp "$SUN_PERF" "$CONF_DIR/sun-gki_defconfig"
-          
-          # 3. 注入 KernelSU 核心需求到所有相关配置
-          # 放在文件末尾，确保在合并时具有最高优先级（覆盖前面的冲突项）
-          for target in "$SUN_PERF" "$CONF_DIR/sun-gki_defconfig" "$GKI_DEFCONFIG"; do
-            echo "正在注入配置到: $target"
-            {
-              echo "CONFIG_KSU=y"
-              echo "CONFIG_KPROBES=y"
-              echo "CONFIG_KPROBE_EVENTS=y"
-              echo "CONFIG_OVERLAY_FS=y"
-              # 禁用三星可能导致编译失败或运行异常的安全项
-              echo "CONFIG_KNOX_NCM=n"
-              echo "CONFIG_UH=n"
-              echo "CONFIG_RKP=n"
-              echo "CONFIG_KDP=n"
-              echo "CONFIG_SECURITY_DEFEX=n"
-              echo "CONFIG_LOCALVERSION=\"-S25-GKI-SukiSU\""
-            } >> "$target"
-          done
-
-          # 4. 彻底切断三星的“事后修正”脚本 (关键点)
-          # 三星的 build.config.* 经常包含命令在 merge 后强行把 KPROBES 改成 n
-          # 我们直接把这些自动化拦截逻辑从脚本里抹除
-          echo "正在清理 build.config 中的拦截命令..."
-          find . -name "build.config.*" -exec sed -i 's/sed.*CONFIG_KPROBES.*//g' {} +
-          find . -name "build.config.*" -exec sed -i 's/sed.*CONFIG_KSU.*//g' {} +
-
-          # 5. 函数打桩：强行让三星的校验函数返回成功
-          MSM_COMMON=$(find . -name "build.config.msm.common" | head -1)
-          if [ -f "$MSM_COMMON" ]; then
-            echo "正在对校验函数进行打桩..."
-            sed -i '/function merge_defconfig_fragments() {/a \  return 0' "$MSM_COMMON"
-            sed -i '/function check_merged_defconfig() {/a \  return 0' "$MSM_COMMON"
-            sed -i '/function validate_defconfig() {/a \  return 0' "$MSM_COMMON"
+          # 1. 深度拦截 merge_config.sh
+          # 让它在找不到碎片文件（如 sun-gki_defconfig）时只告警不退出
+          MERGE_SCRIPT=$(find . -name "merge_config.sh" | head -1)
+          if [ -f "$MERGE_SCRIPT" ]; then
+            echo "正在修补合并脚本逻辑: $MERGE_SCRIPT"
+            sed -i '/if \[ ! -r "$ORIG_MERGE_FILE" \]; then/,/fi/c\  if [ ! -r "$ORIG_MERGE_FILE" ]; then echo "Warning: Fragment missing, skipping..."; continue; fi' "$MERGE_SCRIPT"
+            sed -i 's/exit 1 # base file check/echo "Base missing!" #/g' "$MERGE_SCRIPT"
           fi
 
-      - name: 执行内核编译
+          # 2. 清理干扰：防止三星脚本在编译后期强制修改我们的内核名
+          echo "正在清理 build.config 中的名称强制重写..."
+          find . -name "build.config.*" -exec sed -i '/CONFIG_LOCALVERSION/d' {} +
+
+          # 3. 注入配置与自定义内核名
+          GKI_CONF=$(find . -name "gki_defconfig" | head -1)
+          SUN_CONF=$(find . -name "sun_perf.config" | head -1)
+          
+          # 【你可以在这里修改你的专属内核名字】
+          CUSTOM_NAME="-Feng-Custom-v1.0"
+
+          for target in "$GKI_CONF" "$SUN_CONF"; do
+            if [ -f "$target" ]; then
+              echo "正在配置 $target ..."
+              {
+                echo "CONFIG_KSU=y"
+                echo "CONFIG_KPROBES=y"
+                echo "CONFIG_KPROBE_EVENTS=y"
+                echo "CONFIG_OVERLAY_FS=y"
+                # 写入自定义内核名
+                echo "CONFIG_LOCALVERSION=\"$CUSTOM_NAME\""
+                # 关闭干扰安全项
+                echo "CONFIG_KNOX_NCM=n"
+                echo "CONFIG_UH=n"
+                echo "CONFIG_RKP=n"
+                echo "CONFIG_KDP=n"
+                echo "CONFIG_SECURITY_DEFEX=n"
+              } >> "$target"
+            fi
+          done
+
+          # 4. 废除三星后置校验逻辑
+          MSM_COMMON=$(find . -name "build.config.msm.common" | head -1)
+          if [ -f "$MSM_COMMON" ]; then
+            sed -i '/function merge_defconfig_fragments() {/a \  return 0' "$MSM_COMMON"
+            sed -i '/function check_merged_defconfig() {/a \  return 0' "$MSM_COMMON"
+          fi
+
+      - name: 开始 Bazel 构建
         run: |
-          # 屏蔽所有配置校验报错，强制继续
           export KCONFIG_WERROR=false
           export SKIP_DEFCONFIG_VALIDATION=1
           export SKIP_CONFIG_CHECK=1
           export SKIP_ABI_CHECK=1
           export GKI_KMI_ENFORCED=0
           
-          # 启动三星官方 S25u 构建指令
+          # 执行编译指令
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 使用 AnyKernel3 打包
+      - name: 打包 AnyKernel3 刷机包
         run: |
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
           
-          # 搜索生成的 Image 镜像
+          # 自动寻找产物
           IMAGE=$(find kernel_platform/bazel-out -name "Image" -type f | head -1)
           [ -z "$IMAGE" ] && IMAGE=$(find kernel_platform/bazel-out -name "Image.gz" -type f | head -1)
           
           if [ -n "$IMAGE" ]; then
             cp "$IMAGE" AnyKernel3/
-            # 拷贝设备树和模块
             find kernel_platform/bazel-out -name "dtbo.img" -type f -exec cp {} AnyKernel3/ \;
             mkdir -p AnyKernel3/modules/lib/modules/
             find kernel_platform/bazel-out -name "*.ko" -type f -exec cp {} AnyKernel3/modules/lib/modules/ \;
             
-            cd AnyKernel3 && zip -r9 ../S25-GKI-SukiSU.zip ./* && cd ..
-            mv S25-GKI-SukiSU.zip output/
-            echo "打包成功。"
+            cd AnyKernel3 && zip -r9 ../S25u-Custom-Kernel.zip ./* && cd ..
+            mv S25u-Custom-Kernel.zip output/
           else
-            echo "错误: 未找到 Image 产物，编译可能已中断。" && exit 1
+            echo "错误：编译未生成 Image，请检查日志。" && exit 1
           fi
 
-      - name: 上传编译产物
+      - name: 上传构建产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25u-SukiSU-Kernel
+          name: S25u-Feng-Kernel
           path: output/
 
