@@ -11,6 +11,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 只缓存 Bazel 编译过程 → 实现增量编译
+      - name: Cache Bazel build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/bazel
+            out/
+            kernel_platform/bazel-out
+          key: ${{ runner.os }}-bazel-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-bazel-
+
       - name: 环境依赖初始化
         run: |
           sudo apt update -y
@@ -39,7 +51,6 @@ jobs:
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
           
-          # 只搜 Image，完全去掉 Image.gz 逻辑
           IMAGE=$(find . -name "Image" -type f 2>/dev/null | head -1)
           
           if [ -n "$IMAGE" ]; then
