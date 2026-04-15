@@ -18,65 +18,88 @@ jobs:
       - name: Fix line endings
         run: find . -name "*.sh" -exec dos2unix {} + || true
 
-      # 清理旧的 SUSFS / KSU 残留，避免报错
       - name: Clean old KSU/SUSFS
         run: |
           cd kernel_platform/common
           rm -rf drivers/kernelsu
           rm -f include/linux/susfs.h
 
-      # 注入 SukiSU GKI 模式（真正内核ROOT）
       - name: Setup SukiSU GKI
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
+      - name: Clone AnyKernel3
+        run: |
+          if [ ! -d AnyKernel3 ]; then
+            git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
+          fi
+
       - name: Build kernel
         run: |
           export KCONFIG_WERROR=false
           export SKIP_DEFCONFIG_VALIDATION=1
-          export POST_DEFCONFIG_CMDS="update_config"
+          export SKIP_CONFIG_CHECK=1
 
-          update_config() {
-              scripts/config --file .config \
-                  -e UNWINDER_FRAME_POINTER \
-                  -d WERROR \
-                  -d SAMPLES \
-                  -d BPFILTER \
-                  -e RANDSTRUCT_NONE \
-                  -d RANDSTRUCT_FULL \
-                  -d RANDSTRUCT \
-                  -d AF_RXRPC \
-                  -d AFS_FS \
-                  -e KPM \
-                  -d KNOX_NCM \
-                  -d UH \
-                  -d RKP \
-                  -d KDP \
-                  -d SECURITY_DEFEX \
-                  -d INTEGRITY \
-                  -d FIVE \
-                  -d TRIM_UNUSED_KSYMS
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun --prepare_only || true
 
-              echo 'CONFIG_LOCALVERSION="-S25-GKI-SukiSU"' >> .config
-              make olddefconfig
-          }
+          BAZEL_CONFIG=$(find kernel_platform/bazel-out -name .config | grep common | head -1)
+
+          if [ -n "$BAZEL_CONFIG" ]; then
+            sed -i '
+              s/CONFIG_WERROR=y/CONFIG_WERROR=n/g
+              s/CONFIG_SAMPLES=y/CONFIG_SAMPLES=n/g
+              s/CONFIG_BPFILTER=y/CONFIG_BPFILTER=n/g
+              s/CONFIG_RANDSTRUCT_FULL=y/CONFIG_RANDSTRUCT_FULL=n/g
+              s/CONFIG_RANDSTRUCT=y/CONFIG_RANDSTRUCT=n/g
+              s/CONFIG_AF_RXRPC=y/CONFIG_AF_RXRPC=n/g
+              s/CONFIG_AFS_FS=y/CONFIG_AFS_FS=n/g
+              s/CONFIG_KNOX_NCM=y/CONFIG_KNOX_NCM=n/g
+              s/CONFIG_UH=y/CONFIG_UH=n/g
+              s/CONFIG_RKP=y/CONFIG_RKP=n/g
+              s/CONFIG_KDP=y/CONFIG_KDP=n/g
+              s/CONFIG_SECURITY_DEFEX=y/CONFIG_SECURITY_DEFEX=n/g
+              s/CONFIG_INTEGRITY=y/CONFIG_INTEGRITY=n/g
+              s/CONFIG_FIVE=y/CONFIG_FIVE=n/g
+              s/CONFIG_TRIM_UNUSED_KSYMS=y/CONFIG_TRIM_UNUSED_KSYMS=n/g
+              s/CONFIG_UNWINDER_FRAME_POINTER=n/CONFIG_UNWINDER_FRAME_POINTER=y/g
+              s/CONFIG_RANDSTRUCT_NONE=n/CONFIG_RANDSTRUCT_NONE=y/g
+              s/CONFIG_KPM=n/CONFIG_KPM=y/g
+            ' "$BAZEL_CONFIG"
+
+            echo 'CONFIG_LOCALVERSION="-S25-GKI-SukiSU"' >> "$BAZEL_CONFIG"
+            export SKIP_CONFIG_REGEN=1
+          fi
 
           bash build_kernel_GKI.sh pa3q_chn_openx user sun --nocheck_defconfig || true
 
-      - name: Collect all files
-        if: always()
+      - name: Pack with AnyKernel3
         run: |
           mkdir -p output
-          # 👇 只修改了这一行，改用 find 全局搜索，无论目录嵌套几级都能找到
-          find kernel_platform/bazel-out/k8-fastbuild/bin/common/ -name ".config" -exec cp {} output/ \; 2>/dev/null
-          find . -name "Image*" -type f -exec cp {} output/ \;
-          find . -name "dtbo.img" -type f -exec cp {} output/ \;
-          find . -name "*.ko" -type f -exec cp {} output/ \;
+          
+          # 复制内核、dtbo
+          find . -name "Image" -o -name "Image.gz" | head -1 | xargs cp -t AnyKernel3/
+          find . -name "dtbo.img" | head -1 | xargs cp -t AnyKernel3/
 
-      - name: Upload
+          # 复制所有 ko 模块到 AnyKernel3/modules
+          mkdir -p AnyKernel3/modules
+          find . -name "*.ko" -type f | xargs cp -t AnyKernel3/modules/
+
+          # 根目录生成 zip
+          cd AnyKernel3
+          zip -r9 ../S25-GKI-SukiSU.zip ./*
+          cd ..
+          
+          # 移入上传目录
+          mv S25-GKI-SukiSU.zip output/
+
+          # 同时保存 .config 方便核对
+          find kernel_platform/bazel-out/k8-fastbuild/bin/common/ -name ".config" -exec cp {} output/ \; 2>/dev/null
+
+      - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: S25_GKI_SukiSU
           path: output/
+
