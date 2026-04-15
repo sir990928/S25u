@@ -1,4 +1,4 @@
-name: S25_GKI_Build
+name: 三星S25u_内核编译
 
 on:
   push:
@@ -11,64 +11,71 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: 安装依赖流程
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
-      - name: Fix line endings
+      - name: 修复行尾符
         run: find . -name "*.sh" -exec dos2unix {} + || true
 
-      - name: Setup SukiSU GKI
+      - name: 配置 SukiSU GKI
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: Hack Build System & Inject Config
+      - name: 绕过构建校验与配置注入
         run: |
-          # 1. 定位配置文件
+          # 1. 定位核心文件
           MSM_COMMON=$(find . -name "build.config.msm.common" | head -1)
           GKI_DEFCONFIG=$(find . -name "gki_defconfig" | head -1)
           SUN_PERF=$(find . -name "sun_perf.config" | head -1)
           
-          # 2. 补齐 vendor 路径，解决 Bazel 报错
-          KERNEL_ROOT=$(dirname $(dirname $(dirname $(dirname "$SUN_PERF"))))
-          VENDOR_DIR="$KERNEL_ROOT/arch/arm64/configs/vendor"
-          mkdir -p "$VENDOR_DIR"
-          [ -f "$SUN_PERF" ] && cp "$SUN_PERF" "$VENDOR_DIR/sun-gki_defconfig"
+          echo "找到配置文件: $MSM_COMMON, $GKI_DEFCONFIG, $SUN_PERF"
 
-          # 3. 函数打桩跳过校验
+          # 2. 函数打桩：强行让校验函数返回 0，跳过 Knox 和配置校验
           [ -f "$MSM_COMMON" ] && sed -i '/function merge_defconfig_fragments() {/a \  return 0' "$MSM_COMMON"
           [ -f "$MSM_COMMON" ] && sed -i '/function check_merged_defconfig() {/a \  return 0' "$MSM_COMMON"
-          
-          # 4. 多路注入配置 (使用 printf 避免多行变量解析错误)
-          # 我们把所有配置写进一个循环，确保每个文件都被处理
-          for target in "$GKI_DEFCONFIG" "$SUN_PERF" "$VENDOR_DIR/sun-gki_defconfig"; do
+
+          # 3. 核心 Hack：重定向 Bazel 引用路径
+          # 既然沙盒找不到物理创建的文件，我们就修改规则，让它指向已有的 sun_perf.config
+          if [ -n "$SUN_PERF" ]; then
+            # 提取相对于 msm-kernel 的路径
+            REL_CONF=$(echo "$SUN_PERF" | sed 's|.*msm-kernel/||')
+            echo "重定向 vendor 配置到: $REL_CONF"
+            # 扫描所有构建文件，强行修改路径字符串
+            find . -name "BUILD.bazel" -exec sed -i "s|vendor/sun-gki_defconfig|$REL_CONF|g" {} +
+            find . -name "*.bzl" -exec sed -i "s|vendor/sun-gki_defconfig|$REL_CONF|g" {} +
+          fi
+
+          # 4. 注入自定义内核参数
+          # 清理并注入 KSU 和安全绕过配置
+          for target in "$GKI_DEFCONFIG" "$SUN_PERF"; do
             if [ -f "$target" ]; then
-              echo "Processing $target..."
-              # 清理旧项
+              echo "正在注入配置到: $target"
               for key in CONFIG_KSU CONFIG_KPROBES CONFIG_KPROBE_EVENTS CONFIG_OVERLAY_FS CONFIG_KNOX_NCM CONFIG_UH CONFIG_RKP CONFIG_KDP CONFIG_SECURITY_DEFEX CONFIG_FIVE CONFIG_SEC_RESTRICT_SETUID CONFIG_SEC_RESTRICT_FORK CONFIG_SEC_RESTRICT_ROOT_ACCESS CONFIG_LOCALVERSION; do
                 sed -i "s/^$key=/# $key=/g" "$target" || true
               done
-              # 注入新项
               printf "\nCONFIG_KSU=y\nCONFIG_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\nCONFIG_OVERLAY_FS=y\nCONFIG_KNOX_NCM=n\nCONFIG_UH=n\nCONFIG_RKP=n\nCONFIG_KDP=n\nCONFIG_SECURITY_DEFEX=n\nCONFIG_FIVE=n\nCONFIG_SEC_RESTRICT_SETUID=n\nCONFIG_SEC_RESTRICT_FORK=n\nCONFIG_SEC_RESTRICT_ROOT_ACCESS=n\nCONFIG_LOCALVERSION=\"-S25-GKI-SukiSU\"\n" >> "$target"
             fi
           done
 
-      - name: Build kernel
+      - name: 执行内核编译
         run: |
           export KCONFIG_WERROR=false
           export SKIP_DEFCONFIG_VALIDATION=1
           export SKIP_CONFIG_CHECK=1
           export SKIP_ABI_CHECK=1
           export GKI_KMI_ENFORCED=0
+          # 启动三星专用 GKI 编译脚本
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: Pack with AnyKernel3
+      - name: 使用 AnyKernel3 打包
         run: |
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
           
+          # 自动寻找编译出的 Image 产物
           IMAGE=$(find kernel_platform/bazel-out -name "Image" -type f | head -1)
           [ -z "$IMAGE" ] && IMAGE=$(find kernel_platform/bazel-out -name "Image.gz" -type f | head -1)
           
@@ -80,12 +87,12 @@ jobs:
             cd AnyKernel3 && zip -r9 ../S25-GKI-SukiSU.zip ./* && cd ..
             mv S25-GKI-SukiSU.zip output/
           else
-            echo "Build failed." && exit 1
+            echo "错误: 未找到 Image 文件，编译可能失败。" && exit 1
           fi
 
-      - name: Upload Artifacts
+      - name: 上传编译产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25_Kernel_SukiSU
+          name: S25u-内核-SukiSU
           path: output/
