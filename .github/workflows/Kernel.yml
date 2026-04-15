@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取完整深度以支持 git add 操作
 
       - name: 安装依赖流程
         run: |
@@ -22,7 +24,7 @@ jobs:
       - name: 配置 SukiSU GKI
         run: |
           cd kernel_platform/common
-          # 注入 KernelSU 到源码树
+          # 注入 KernelSU 代码
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
       - name: 绕过构建校验与配置注入
@@ -34,29 +36,33 @@ jobs:
           
           echo "找到配置文件: $MSM_COMMON, $GKI_DEFCONFIG, $SUN_PERF"
 
-          # 2. 函数打桩：强行让校验函数返回 0，跳过 Knox 签名和配置一致性校验
+          # 2. 找到 msm-kernel 源码根目录并物理补齐 vendor 配置
+          # 基于 sun_perf.config 路径向上追溯四级目录
+          KERNEL_ROOT=$(dirname $(dirname $(dirname $(dirname "$SUN_PERF"))))
+          VENDOR_CONFIG_DIR="$KERNEL_ROOT/arch/arm64/configs/vendor"
+          
+          echo "内核源码根目录: $KERNEL_ROOT"
+          echo "目标 vendor 目录: $VENDOR_CONFIG_DIR"
+
+          # 强行创建并生成缺少的 sun-gki_defconfig
+          mkdir -p "$VENDOR_CONFIG_DIR"
+          cp "$SUN_PERF" "$VENDOR_CONFIG_DIR/sun-gki_defconfig"
+          
+          # 关键：将其加入 git 追踪，防止 Bazel 沙盒认为它是非法文件
+          git add "$VENDOR_CONFIG_DIR/sun-gki_defconfig" || true
+
+          # 3. 函数打桩：跳过 Knox 签名和配置一致性校验
           if [ -f "$MSM_COMMON" ]; then
             sed -i '/function merge_defconfig_fragments() {/a \  return 0' "$MSM_COMMON"
             sed -i '/function check_merged_defconfig() {/a \  return 0' "$MSM_COMMON"
-            echo "已完成函数打桩."
-          fi
-
-          # 3. 核心 Hack：重定向 Bazel 引用路径
-          # 修复点：使用 -type f 避开非正规文件，使用 2>/dev/null 屏蔽死链报错
-          if [ -n "$SUN_PERF" ]; then
-            # 提取相对于 msm-kernel 的路径
-            REL_CONF=$(echo "$SUN_PERF" | sed 's|.*msm-kernel/||')
-            echo "重定向 vendor 引用到: $REL_CONF"
-            
-            # 扫描所有构建文件，强行修改缺失的 vendor/sun-gki_defconfig 路径
-            find . -type f \( -name "BUILD.bazel" -o -name "*.bzl" \) -print0 2>/dev/null | xargs -0 sed -i "s|vendor/sun-gki_defconfig|$REL_CONF|g" 2>/dev/null || true
           fi
 
           # 4. 注入自定义内核参数 (KSU + 安全选项关闭)
-          for target in "$GKI_DEFCONFIG" "$SUN_PERF"; do
+          # 遍历所有相关的配置文件进行注入
+          for target in "$GKI_DEFCONFIG" "$SUN_PERF" "$VENDOR_CONFIG_DIR/sun-gki_defconfig"; do
             if [ -f "$target" ]; then
               echo "正在注入配置到: $target"
-              # 先把原有的冲突项屏蔽
+              # 先屏蔽原有的冲突项
               for key in CONFIG_KSU CONFIG_KPROBES CONFIG_KPROBE_EVENTS CONFIG_OVERLAY_FS CONFIG_KNOX_NCM CONFIG_UH CONFIG_RKP CONFIG_KDP CONFIG_SECURITY_DEFEX CONFIG_FIVE CONFIG_SEC_RESTRICT_SETUID CONFIG_SEC_RESTRICT_FORK CONFIG_SEC_RESTRICT_ROOT_ACCESS CONFIG_LOCALVERSION; do
                 sed -i "s/^$key=/# $key=/g" "$target" || true
               done
@@ -67,14 +73,14 @@ jobs:
 
       - name: 执行内核编译
         run: |
-          # 禁用配置错误检查，确保注入生效
+          # 禁用环境变量报错
           export KCONFIG_WERROR=false
           export SKIP_DEFCONFIG_VALIDATION=1
           export SKIP_CONFIG_CHECK=1
           export SKIP_ABI_CHECK=1
           export GKI_KMI_ENFORCED=0
           
-          # 运行三星官方构建脚本
+          # 启动三星官方构建脚本
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: 使用 AnyKernel3 打包
@@ -82,13 +88,13 @@ jobs:
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
           
-          # 寻找 Image 产物 (GKI 可能是 Image 或 Image.gz)
+          # 寻找编译产物 (Image 或 Image.gz)
           IMAGE=$(find kernel_platform/bazel-out -name "Image" -type f | head -1)
           [ -z "$IMAGE" ] && IMAGE=$(find kernel_platform/bazel-out -name "Image.gz" -type f | head -1)
           
           if [ -n "$IMAGE" ]; then
             cp "$IMAGE" AnyKernel3/
-            # 拷贝 DTBO 和内核模块
+            # 拷贝设备树和内核模块
             find kernel_platform/bazel-out -name "dtbo.img" -type f -exec cp {} AnyKernel3/ \;
             mkdir -p AnyKernel3/modules/lib/modules/
             find kernel_platform/bazel-out -name "*.ko" -type f -exec cp {} AnyKernel3/modules/lib/modules/ \;
@@ -96,9 +102,8 @@ jobs:
             # 打包 zip
             cd AnyKernel3 && zip -r9 ../S25-GKI-SukiSU.zip ./* && cd ..
             mv S25-GKI-SukiSU.zip output/
-            echo "打包完成."
           else
-            echo "错误: 未找到 Image 产物，编译可能已中断。" && exit 1
+            echo "错误: 未找到 Image 文件，编译失败。" && exit 1
           fi
 
       - name: 上传编译产物
