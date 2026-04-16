@@ -27,19 +27,17 @@ jobs:
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
-      # ==================== 关键：自动禁用冲突配置 ====================
-      - name: 自动屏蔽冲突的 config fragment 叠加
+      # ==================== 终极方案：直接清空冲突配置文件 ====================
+      - name: 清空所有额外vendor config，防止叠加覆盖
         run: |
-          FILE1="kernel_platform/msm-kernel/build.config.msm.perf"
-          FILE2="kernel_platform/msm-kernel/build.config.allyesconfig"
-          FILE3="kernel_platform/msm-kernel/build.config.gki"
+          # 清空这三个文件，让它没有内容可以叠加
+          echo "" > kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config
+          echo "" > kernel_platform/msm-kernel/arch/arm64/configs/oem/sun_sec.config
+          echo "" > kernel_platform/msm-kernel/arch/arm64/configs/lego.config
 
-          for f in $FILE1 $FILE2 $FILE3; do
-            if [ -f "$f" ]; then
-              sed -i 's|^apply_defconfig_fragment|#apply_defconfig_fragment|' "$f"
-              echo "已注释：$f"
-            fi
-          done
+          # 同时注释掉所有调用叠加的代码
+          cd kernel_platform/msm-kernel
+          sed -i 's|^apply_defconfig_fragment|#apply_defconfig_fragment|g' build.config.*
 
       - name: 格式规范化
         run: find . -name "*.sh" -exec dos2unix {} + || true
