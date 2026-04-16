@@ -34,24 +34,15 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 动态注入魔改逻辑到入口脚本
+      - name: 动态注入魔改逻辑 (Base64 安全模式)
         run: |
-          # 使用 cat 配合单引号 EOF，这是在 YAML 里注入代码最安全的方式
-          cat << 'EOF' > custom_vars.tmp
-# --- [SukiSU CUSTOM INJECT] ---
-export CL_SYNC="SukiSU"
-export BUILD_NUMBER="Ultra"
-export SEC_BUILD_OPTION_KNOX_CSB="n"
-export SEC_PRODUCT_SHIP="n"
-export SKIP_DEFCONFIG_VALIDATION=1
-export SKIP_CONFIG_CHECK=1
-export KCONFIG_WERROR=false
-export EXTRA_KBUILD_ARGS="--kconfig_add=CONFIG_UH=n --kconfig_add=CONFIG_RKP=n --kconfig_add=CONFIG_KDP=n --kconfig_add=CONFIG_GAF=n --kconfig_add=CONFIG_PROCA=n --kconfig_add=CONFIG_SECURITY_DEFEX=n --kconfig_add=CONFIG_INTEGRITY=n --kconfig_add=CONFIG_FIVE=n --kconfig_add=CONFIG_TRIM_UNUSED_KSYMS=n --kconfig_add=CONFIG_KNOX_NCM=n --kconfig_add=CONFIG_LOCALVERSION_AUTO=n --kconfig_add=CONFIG_SEC_KNOX=n --kconfig_add=CONFIG_KPM=y --kconfig_add=CONFIG_WERROR=n --kconfig_add=CONFIG_LOCALVERSION=\"-SukiSU-Ultra\""
-# --- [END OF INJECT] ---
-EOF
-          # 物理注入到脚本第二行
+          # 将我们的魔改逻辑编码为 Base64，彻底绕过 YAML 语法校验
+          # 内容包含：CL_SYNC, BUILD_NUMBER, SEC_BUILD_OPTION, EXTRA_KBUILD_ARGS
+          echo "ZXhwb3J0IENMX1NZTkM9IlN1a2lTVSIKZXhwb3J0IEJVSUxEX05VTUJFUj0iVWx0cmEiCmV4cG9ydCBTRUNfQlVJTERfT1BUSU9OX0tOT1hfQ1NCPSJuIgpleHBvcnQgU0VDX1BST0RVQ1RfU0hJUD0ibiIKZXhwb3J0IFNLSVBfREVGQ09ORklHX1ZBTElEQVRJT049MQpleHBvcnQgU0tJUF9DT05GSUdfQ0hFQ0s9MQpleHBvcnQgS0NPTkZJR19XRVJST1I9ZmFsc2UKZXhwb3J0IEVYVFJBX0tCVUlMRF9BUkdTPSItLWtjb25maWdfYWRkPUNPTkZJR19VSD1uIC0ta2NvbmZpZ19hZGQ9Q09ORklHX1JLUD1uIC0ta2NvbmZpZ19hZGQ9Q09ORklHX0tEUD1uIC0ta2NvbmZpZ19hZGQ9Q09ORklHX0dBRj1uIC0ta2NvbmZpZ19hZGQ9Q09ORklHX1BST0NBPW4gLS1rY29uZmlnX2FkZD1DT05GSUdfU0VDVVJJVFlfREVGRVg9biAtLWtjb25maWdfYWRkPUNPTkZJR19JTlRFR1JJVFk9biAtLWtjb25maWdfYWRkPUNPTkZJR19GSVZFPW4gLS1rY29uZmlnX2FkZD1DT05GSUdfVFJJTV9VTlVTRURfS1NZTVM9biAtLWtjb25maWdfYWRkPUNPTkZJR19LTk9YX05DTT1uIC0ta2NvbmZpZ19hZGQ9Q09ORklHX0xPQ0FMVkVSU0lPTl9BVVRPPW4gLS1rY29uZmlnX2FkZD1DT05GSUdfU0VDX0tOT1g9biAtLWtjb25maWdfYWRkPUNPTkZJR19LUE09eSAtLWtjb25maWdfYWRkPUNPTkZJR19XRVJST1I9biAtLWtjb25maWdfYWRkPUNPTkZJR19MT0NBTFZFUlNJT049XCItU3VraVNVLVVsdHJhXCIiCg==" | base64 -d > custom_vars.tmp
+          
+          # 物理注入到入口脚本第 2 行
           sed -i '2r custom_vars.tmp' build_kernel_GKI.sh
-          echo "✅ 注入成功"
+          echo "✅ 注入成功 (已绕过所有 YAML 语法限制)"
 
       - name: 开始 Bazel 构建
         run: |
