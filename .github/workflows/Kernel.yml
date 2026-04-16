@@ -11,7 +11,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 只缓存 Bazel 编译过程 → 实现增量编译
       - name: Cache Bazel build
         uses: actions/cache@v4
         with:
@@ -28,6 +27,20 @@ jobs:
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
+      # ==================== 关键：自动禁用冲突配置 ====================
+      - name: 自动屏蔽冲突的 config fragment 叠加
+        run: |
+          FILE1="kernel_platform/msm-kernel/build.config.msm.perf"
+          FILE2="kernel_platform/msm-kernel/build.config.allyesconfig"
+          FILE3="kernel_platform/msm-kernel/build.config.gki"
+
+          for f in $FILE1 $FILE2 $FILE3; do
+            if [ -f "$f" ]; then
+              sed -i 's|^apply_defconfig_fragment|#apply_defconfig_fragment|' "$f"
+              echo "已注释：$f"
+            fi
+          done
+
       - name: 格式规范化
         run: find . -name "*.sh" -exec dos2unix {} + || true
 
@@ -43,7 +56,9 @@ jobs:
           export SKIP_CONFIG_CHECK=1
           export SKIP_ABI_CHECK=1
           export GKI_KMI_ENFORCED=0
-          
+          export ALLOW_CONFIG_OVERRIDE=1
+          export ALLOW_OVERRIDE_CONFIG=1
+
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: 打包 AnyKernel3 刷机包
