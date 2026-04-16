@@ -16,7 +16,7 @@ jobs:
         with:
           path: |
             ~/.cache/bazel
-            kernel_platform/out
+            out/
           key: ${{ runner.os }}-bazel-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-bazel-
@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
-          
+
       - name: 格式规范化
         run: find . -name "*.sh" -exec dos2unix {} + || true
 
@@ -36,72 +36,91 @@ jobs:
 
       - name: 注入自定义内核配置 (关闭安全项 & 更名 SukiSU)
         run: |
-          # 锁定关键配置文件
+          # 寻找核心配置文件 build.config.msm.perf
           CONFIG_FILE=$(find . -name "build.config.msm.perf" | grep "msm-kernel" | head -1)
-          
+
           if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
             echo "找到配置文件: $CONFIG_FILE"
-            
+
+            # 注入配置修正函数，强制在配置生成后拦截并修改
             printf "\nfunction my_final_config_fixup() {\n" >> "$CONFIG_FILE"
             printf "    echo \"--- [S25U CUSTOM] 正在执行配置修正... ---\"\n" >> "$CONFIG_FILE"
-            # 关闭三星/高通的安全校验项
+            # 屏蔽三星安全校验项
             printf "    local DISABLE_OPTS=(\"CONFIG_UH\" \"CONFIG_RKP\" \"CONFIG_KDP\" \"CONFIG_GAF\" \"CONFIG_PROCA\" \"CONFIG_SECURITY_DEFEX\" \"CONFIG_INTEGRITY\" \"CONFIG_FIVE\" \"CONFIG_TRIM_UNUSED_KSYMS\" \"CONFIG_KNOX_NCM\" \"CONFIG_LOCALVERSION_AUTO\")\n" >> "$CONFIG_FILE"
             printf "    for opt in \"\${DISABLE_OPTS[@]}\"; do\n" >> "$CONFIG_FILE"
             printf "        sed -i \"/^\$opt=/d\" \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
             printf "        sed -i \"/^# \$opt is not set/d\" \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
             printf "        echo \"# \$opt is not set\" >> \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
             printf "    done\n" >> "$CONFIG_FILE"
-            # 开启 KPM 并设置内核名称
+            # 强制开启 KPM 并应用自定义内核名称
             printf "    sed -i \"/^CONFIG_KPM=/d\" \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
             printf "    echo \"CONFIG_KPM=y\" >> \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
             printf "    local MY_KNAME=\"-SukiSU-Ultra\"\n" >> "$CONFIG_FILE"
             printf "    sed -i \"s/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=\\\"\$MY_KNAME\\\"/\" \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
             printf "    if ! grep -q \"CONFIG_LOCALVERSION=\" \${OUT_DIR}/.config; then echo \"CONFIG_LOCALVERSION=\\\"\$MY_KNAME\\\"\" >> \${OUT_DIR}/.config; fi\n" >> "$CONFIG_FILE"
             printf "    sed -i \"s/^CONFIG_WERROR=y/# CONFIG_WERROR is not set/\" \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
+            # 同步配置依赖关系
             printf "    (cd \${KERNEL_DIR} && make O=\${OUT_DIR} \${MAKE_ARGS} olddefconfig)\n" >> "$CONFIG_FILE"
             printf "    echo \"--- [S25U CUSTOM] 修正完成！ ---\"\n" >> "$CONFIG_FILE"
             printf "}\n" >> "$CONFIG_FILE"
             printf "append_cmd POST_DEFCONFIG_CMDS 'my_final_config_fixup'\n" >> "$CONFIG_FILE"
-            
-            echo "注入完成，内核名已设为 -SukiSU-Ultra"
+
+            echo "注入完成，内核名设为 -SukiSU-Ultra"
           else
             echo "错误：未找到构建配置文件" && exit 1
           fi
 
       - name: 开始 Bazel 构建
         run: |
+          # 设置全局绕过参数
           export KCONFIG_WERROR=false
           export SKIP_DEFCONFIG_VALIDATION=1
           export SKIP_CONFIG_CHECK=1
           export SKIP_ABI_CHECK=1
           export GKI_KMI_ENFORCED=0
-          # 运行你根目录下的脚本
+          # 调用你的本地构建脚本，传入目标参数
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 打包 AnyKernel3 刷机包
+      - name: 打包 AnyKernel3 刷机包 (智能全路径搜索)
         run: |
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
+
+          echo "--- 正在从 out/ 目录智能定位产物 ---"
           
-          # 直接锁定 kernel_platform 下生成的 out 目录
-          # 标准路径应该是 kernel_platform/out/msm-kernel-sun-perf/dist/
-          DIST_DIR=$(find kernel_platform/out -path "*/dist" -type d | head -1)
-          
-          if [ -n "$DIST_DIR" ] && [ -f "$DIST_DIR/Image" ]; then
-            echo "✅ 成功找到编译产物目录: $DIST_DIR"
-            cp -vf "$DIST_DIR/Image" AnyKernel3/
-            cp -vf "$DIST_DIR/dtbo.img" AnyKernel3/ 2>/dev/null || true
+          # 在整个 out 目录下搜寻最终生成的 dist 文件夹，并验证 Image 是否存在
+          REAL_DIST=$(find out -path "*/dist" -type d | while read -r dir; do
+            if [ -f "$dir/Image" ]; then
+              echo "$dir"
+              break
+            fi
+          done)
+
+          if [ -n "$REAL_DIST" ]; then
+            echo "✅ 成功锁定产物目录: $REAL_DIST"
             
-            # 拷贝内核模块
+            # 1. 拷贝内核镜像
+            cp -vf "$REAL_DIST/Image" AnyKernel3/
+            
+            # 2. 拷贝设备树 (dtbo.img)
+            if [ -f "$REAL_DIST/dtbo.img" ]; then
+              cp -vf "$REAL_DIST/dtbo.img" AnyKernel3/
+            fi
+            
+            # 3. 拷贝驱动模块 (*.ko)
             mkdir -p AnyKernel3/modules/lib/modules/
-            cp -vf "$DIST_DIR"/*.ko AnyKernel3/modules/lib/modules/ 2>/dev/null || true
+            find "$REAL_DIST" -name "*.ko" -exec cp -vf {} AnyKernel3/modules/lib/modules/ \;
             
+            # 4. 执行 ZIP 打包
             cd AnyKernel3
             zip -r9 ../SukiSU-Ultra-Kernel.zip ./* -x .git/*
             cd ..
             mv SukiSU-Ultra-Kernel.zip output/
+            echo "--- 打包流程顺利结束 ---"
           else
-            echo "❌ 提取失败：在 $DIST_DIR 没找到 Image。请检查编译日志是否成功。"
+            echo "❌ 提取失败：在 out 目录下未找到包含 Image 的 dist 文件夹。"
+            echo "--- 正在列出 out 目录结构供排查 ---"
+            find out -maxdepth 4
             exit 1
           fi
 
