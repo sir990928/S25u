@@ -36,14 +36,82 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
+      - name: 注入自定义内核配置 (关闭安全项 & 更名)
+        run: |
+          # 定位三星 S25U (sun) 的核心配置文件
+          # 路径通常位于 kernel_platform/msm-kernel/build.config.msm.perf
+          CONFIG_FILE=$(find . -name "build.config.msm.perf" | grep "msm-kernel" | head -1)
+          
+          if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
+            echo "找到配置文件: $CONFIG_FILE，开始注入自定义逻辑..."
+            
+            cat << 'EOF' >> "$CONFIG_FILE"
+
+################################################################################
+## S25U 自定义注入逻辑：关闭安全组件 & 内核更名
+################################################################################
+function my_final_config_fixup() {
+    echo "--- [S25U CUSTOM] 正在执行配置修正... ---"
+
+    # 1. 强制关闭安全项与自动版本号
+    local DISABLE_OPTS=(
+        "CONFIG_UH"
+        "CONFIG_RKP"
+        "CONFIG_KDP"
+        "CONFIG_GAF"
+        "CONFIG_PROCA"
+        "CONFIG_SECURITY_DEFEX"
+        "CONFIG_INTEGRITY"
+        "CONFIG_FIVE"
+        "CONFIG_TRIM_UNUSED_KSYMS"
+        "CONFIG_KNOX_NCM"
+        "CONFIG_LOCALVERSION_AUTO"
+    )
+
+    for opt in "${DISABLE_OPTS[@]}"; do
+        sed -i "/^$opt=/d" ${OUT_DIR}/.config
+        sed -i "/^# $opt is not set/d" ${OUT_DIR}/.config
+        echo "# $opt is not set" >> ${OUT_DIR}/.config
+    done
+
+    # 2. 强制开启 KPM (性能监控)
+    sed -i "/^CONFIG_KPM=/d" ${OUT_DIR}/.config
+    echo "CONFIG_KPM=y" >> ${OUT_DIR}/.config
+
+    # 3. 自定义内核名称 (在此修改你的专属名字)
+    local MY_KNAME="-Gemini-S25U"
+    sed -i "s/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=\"$MY_KNAME\"/" ${OUT_DIR}/.config
+    if ! grep -q "CONFIG_LOCALVERSION=" ${OUT_DIR}/.config; then
+        echo "CONFIG_LOCALVERSION=\"$MY_KNAME\"" >> ${OUT_DIR}/.config
+    fi
+
+    # 4. 强制关闭编译警告报错 (Werror)
+    sed -i "s/^CONFIG_WERROR=y/# CONFIG_WERROR is not set/" ${OUT_DIR}/.config
+
+    # 5. 重新校验依赖并整理 (关键步骤)
+    (cd ${KERNEL_DIR} && make O=${OUT_DIR} ${MAKE_ARGS} olddefconfig)
+    echo "--- [S25U CUSTOM] 修正完成！ ---"
+}
+
+# 挂载到后置命令队列，确保在官方 fragments 合并后执行
+append_cmd POST_DEFCONFIG_CMDS 'my_final_config_fixup'
+EOF
+            echo "注入成功！"
+          else
+            echo "错误：未找到 build.config.msm.perf，请检查源码结构"
+            exit 1
+          fi
+
       - name: 开始 Bazel 构建
         run: |
+          # 导出环境变量以确保跳过校验
           export KCONFIG_WERROR=false
           export SKIP_DEFCONFIG_VALIDATION=1
           export SKIP_CONFIG_CHECK=1
           export SKIP_ABI_CHECK=1
           export GKI_KMI_ENFORCED=0
           
+          # 执行三星官方提供的编译脚本
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: 打包 AnyKernel3 刷机包
@@ -51,20 +119,23 @@ jobs:
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
           
-          IMAGE=$(find . -name "Image" -type f 2>/dev/null | head -1)
+          # 搜索编译产物 Image
+          IMAGE=$(find . -name "Image" -type f 2>/dev/null | grep "out" | head -1)
           
           if [ -n "$IMAGE" ]; then
+            echo "找到编译完成的镜像: $IMAGE"
             cp -v "$IMAGE" AnyKernel3/
-            find . -name "dtbo.img" -type f 2>/dev/null -exec cp {} AnyKernel3/ \;
+            find . -name "dtbo.img" -type f 2>/dev/null | grep "out" | xargs -I {} cp {} AnyKernel3/
+            
             mkdir -p AnyKernel3/modules/lib/modules/
-            find . -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
+            find . -name "*.ko" -type f 2>/dev/null | grep "out" | xargs -I {} cp {} AnyKernel3/modules/lib/modules/
             
             cd AnyKernel3
             zip -r9 ../S25u-Custom-Kernel.zip ./*
             cd ..
             mv S25u-Custom-Kernel.zip output/
           else
-            echo "错误：未找到 Image 文件，编译失败"
+            echo "错误：未找到 Image 文件，编译可能失败，请检查 Bazel 日志"
             exit 1
           fi
 
@@ -72,5 +143,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25u-Feng-Kernel
+          name: S25u-Custom-Kernel-Package
           path: output/
+
