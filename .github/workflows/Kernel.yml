@@ -11,6 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 只缓存 Bazel 编译过程 → 实现增量编译
       - name: Cache Bazel build
         uses: actions/cache@v4
         with:
@@ -27,18 +28,6 @@ jobs:
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
-      # ==================== 终极方案：直接清空冲突配置文件 ====================
-      - name: 清空所有额外vendor config，防止叠加覆盖
-        run: |
-          # 清空这三个文件，让它没有内容可以叠加
-          echo "" > kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config
-          echo "" > kernel_platform/msm-kernel/arch/arm64/configs/oem/sun_sec.config
-          echo "" > kernel_platform/msm-kernel/arch/arm64/configs/lego.config
-
-          # 同时注释掉所有调用叠加的代码
-          cd kernel_platform/msm-kernel
-          sed -i 's|^apply_defconfig_fragment|#apply_defconfig_fragment|g' build.config.*
-
       - name: 格式规范化
         run: find . -name "*.sh" -exec dos2unix {} + || true
 
@@ -54,9 +43,7 @@ jobs:
           export SKIP_CONFIG_CHECK=1
           export SKIP_ABI_CHECK=1
           export GKI_KMI_ENFORCED=0
-          export ALLOW_CONFIG_OVERRIDE=1
-          export ALLOW_OVERRIDE_CONFIG=1
-
+          
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: 打包 AnyKernel3 刷机包
@@ -87,4 +74,3 @@ jobs:
         with:
           name: S25u-Feng-Kernel
           path: output/
-
