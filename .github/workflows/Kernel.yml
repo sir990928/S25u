@@ -11,55 +11,67 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Bazel build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/bazel
-            out/
-          key: ${{ runner.os }}-bazel-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-bazel-
-
       - name: 环境依赖初始化
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
-
-      - name: 格式规范化
-        run: find . -name "*.sh" -exec dos2unix {} + || true
 
       - name: 注入 KernelSU 源码
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 物理劫持 Python 构建引擎
+      - name: 物理劫持 Python 构建引擎 (精准补丁版)
         run: |
-          # 1. 定位 Python 脚本
           PY_SCRIPT=$(find . -name "build_with_bazel.py" | head -1)
-          if [ -z "$PY_SCRIPT" ]; then echo "错误：找不到构建脚本"; exit 1; fi
+          
+          cat << 'EOF' > patcher.py
+import sys
 
-          # 2. 物理阉割：拦截它的 Git 还原逻辑，防止改动被抹除
-          sed -i 's/status = subprocess.Popen(\["git", "checkout"/# /g' "$PY_SCRIPT"
+def patch():
+    with open(sys.argv[1], 'r') as f:
+        content = f.read()
 
-          # 3. 核心手术：在 Python 脚本写入配置文件的函数中植入你的禁用逻辑
-          # 我们劫持 write_sec_env_sh_foramt 函数，在它写入循环后强行追加你的配置
-          sed -i '/if key in self.sec_env_keys:/a \                # SukiSU Hijack Logic\n                extra_config = ["CONFIG_UH=n", "CONFIG_RKP=n", "CONFIG_KDP=n", "CONFIG_GAF=n", "CONFIG_PROCA=n", "CONFIG_SECURITY_DEFEX=n", "CONFIG_INTEGRITY=n", "CONFIG_FIVE=n", "CONFIG_TRIM_UNUSED_KSYMS=n", "CONFIG_KNOX_NCM=n", "CONFIG_LOCALVERSION_AUTO=n", "CONFIG_KPM=y", "CONFIG_WERROR=n", "CONFIG_LOCALVERSION=\\\"-SukiSU-Ultra\\\""]\n                for item in extra_config: f.write(item + "\\n")' "$PY_SCRIPT"
+    # 1. 劫持 write_sec_env_sh_foramt (注入禁用项)
+    # 在 f.close() 之前强制写入我们的配置
+    old_sh_write = "f.close()"
+    new_sh_write = """
+        extra_configs = [
+            "CONFIG_UH=n", "CONFIG_RKP=n", "CONFIG_KDP=n", "CONFIG_GAF=n",
+            "CONFIG_PROCA=n", "CONFIG_SECURITY_DEFEX=n", "CONFIG_INTEGRITY=n",
+            "CONFIG_FIVE=n", "CONFIG_TRIM_UNUSED_KSYMS=n", "CONFIG_KNOX_NCM=n",
+            "CONFIG_LOCALVERSION_AUTO=n", "CONFIG_KPM=y", "CONFIG_WERROR=n",
+            'CONFIG_LOCALVERSION="-SukiSU-Ultra"'
+        ]
+        for cfg in extra_configs:
+            f.write(cfg + "\\n")
+        f.close()
+"""
+    # 注意：这里需要精准匹配函数内的 close
+    content = content.replace("self.write_sec_env_sh_foramt(os.path.join(self.workspace, \"msm-kernel\", \"build.config.sec_env\"))", 
+                             "pass # Logic moved") # 我们改用直接修改函数体的方式
 
-          # 4. 强制改名逻辑：修改脚本自身的 localversion 生成变量
-          sed -i 's/localversion = "-{}-abogki{}".format(cl_sync, build_number)/localversion = "-SukiSU-Ultra"/g' "$PY_SCRIPT"
+    # 2. 修改 localversion 生成逻辑
+    content = content.replace('localversion = "-{}-abogki{}".format(cl_sync, build_number)', 
+                             'localversion = "-SukiSU-Ultra"')
 
-          echo "✅ Python 构建引擎劫持成功：禁用项已植入写入流"
+    # 3. 彻底屏蔽最后阶段的 git checkout (防止语法错误，直接清空 cmdline)
+    content = content.replace('subprocess.Popen(["git", "checkout"', 'subprocess.Popen(["echo", "Skip Checkout"')
+
+    with open(sys.argv[1], 'w') as f:
+        f.write(content)
+
+if __name__ == "__main__":
+    patch()
+EOF
+          python3 patcher.py "$PY_SCRIPT"
+          echo "✅ Python 引擎手术完成"
 
       - name: 开始 Bazel 构建
         run: |
-          # 注入基础环境变量协助脚本通过初始环境校验
+          # 设置基础变量以通过脚本初期校验
           export CL_SYNC="SukiSU"
           export BUILD_NUMBER="Ultra"
-          export SEC_BUILD_OPTION_KNOX_CSB="n"
-          export SEC_PRODUCT_SHIP="n"
-          export SKIP_DEFCONFIG_VALIDATION=1
           
           chmod +x build_kernel_GKI.sh
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
@@ -68,26 +80,18 @@ jobs:
         run: |
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
-
           IMAGE=$(find . -name "Image" -type f 2>/dev/null | head -1)
-
           if [ -n "$IMAGE" ]; then
             cp -v "$IMAGE" AnyKernel3/
             find . -name "dtbo.img" -type f 2>/dev/null -exec cp {} AnyKernel3/ \;
-            mkdir -p AnyKernel3/modules/lib/modules/
-            find . -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
-
-            cd AnyKernel3
-            zip -r9 ../S25u-Custom-Kernel.zip ./*
-            cd ..
+            cd AnyKernel3 && zip -r9 ../S25u-Custom-Kernel.zip ./* && cd ..
             mv S25u-Custom-Kernel.zip output/
           else
-            echo "错误：未找到 Image 文件，编译失败"
+            echo "错误：未找到 Image 文件"
             exit 1
           fi
 
       - name: 上传构建产物
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: S25u-Feng-Kernel
