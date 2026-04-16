@@ -36,11 +36,9 @@ jobs:
 
       - name: 动态注入魔改逻辑到入口脚本
         run: |
-          # 创建临时配置块
-          # 1. CL_SYNC 和 BUILD_NUMBER 解决 Python 脚本强制写 localversion 的问题
-          # 2. SEC_BUILD_OPTION_KNOX_CSB 解决 sec_env.mk 强制开启 Knox 的问题
-          # 3. EXTRA_KBUILD_ARGS 利用 Kleaf 原生能力强制覆盖 .config
-          cat <<EOF > custom_vars.tmp
+          # 创建临时配置文件
+          # 注意：这里的 EXTRA_KBUILD_ARGS 必须写在同一行或者使用 Shell 的换行符
+          cat <<'EOF' > custom_vars.tmp
 
 # --- [SukiSU CUSTOM INJECT] ---
 export CL_SYNC="SukiSU"
@@ -54,16 +52,13 @@ export EXTRA_KBUILD_ARGS="--kconfig_add=CONFIG_UH=n --kconfig_add=CONFIG_RKP=n -
 # --- [END OF INJECT] ---
 
 EOF
-          # 将配置块插入到入口脚本的 #!/bin/bash 之后（即第二行）
+          # 将配置块插入到脚本的第 2 行
           sed -i '2r custom_vars.tmp' build_kernel_GKI.sh
-          
-          echo "✅ 入口脚本魔改完成，当前头部预览："
-          head -n 30 build_kernel_GKI.sh
+          echo "✅ 入口脚本魔改完成"
 
       - name: 开始 Bazel 构建
         run: |
           chmod +x build_kernel_GKI.sh
-          # 直接运行魔改后的脚本
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: 打包 AnyKernel3 刷机包
