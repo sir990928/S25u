@@ -36,10 +36,9 @@ jobs:
 
       - name: 动态注入魔改逻辑到入口脚本
         run: |
-          # 创建临时配置文件
-          # 注意：这里的 EXTRA_KBUILD_ARGS 必须写在同一行或者使用 Shell 的换行符
+          # 1. 先创建一个包含注入变量的临时文件
+          # 使用单引号 'EOF' 确保内容中的引号不被 Actions 环境解析
           cat <<'EOF' > custom_vars.tmp
-
 # --- [SukiSU CUSTOM INJECT] ---
 export CL_SYNC="SukiSU"
 export BUILD_NUMBER="Ultra"
@@ -50,15 +49,16 @@ export SKIP_CONFIG_CHECK=1
 export KCONFIG_WERROR=false
 export EXTRA_KBUILD_ARGS="--kconfig_add=CONFIG_UH=n --kconfig_add=CONFIG_RKP=n --kconfig_add=CONFIG_KDP=n --kconfig_add=CONFIG_GAF=n --kconfig_add=CONFIG_PROCA=n --kconfig_add=CONFIG_SECURITY_DEFEX=n --kconfig_add=CONFIG_INTEGRITY=n --kconfig_add=CONFIG_FIVE=n --kconfig_add=CONFIG_TRIM_UNUSED_KSYMS=n --kconfig_add=CONFIG_KNOX_NCM=n --kconfig_add=CONFIG_LOCALVERSION_AUTO=n --kconfig_add=CONFIG_SEC_KNOX=n --kconfig_add=CONFIG_KPM=y --kconfig_add=CONFIG_WERROR=n --kconfig_add=CONFIG_LOCALVERSION=\"-SukiSU-Ultra\""
 # --- [END OF INJECT] ---
-
 EOF
-          # 将配置块插入到脚本的第 2 行
+
+          # 2. 将临时文件插入到 build_kernel_GKI.sh 的第 2 行
           sed -i '2r custom_vars.tmp' build_kernel_GKI.sh
-          echo "✅ 入口脚本魔改完成"
+          echo "✅ 入口脚本物理注入成功"
 
       - name: 开始 Bazel 构建
         run: |
           chmod +x build_kernel_GKI.sh
+          # 直接运行，参数已经注入到脚本头部了
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: 打包 AnyKernel3 刷机包
