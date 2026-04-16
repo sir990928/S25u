@@ -78,27 +78,30 @@ jobs:
           export GKI_KMI_ENFORCED=0
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 打包 AnyKernel3 刷机包
+- name: 打包 AnyKernel3 刷机包
         run: |
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
-          IMAGE=$(find . -name "Image" -type f 2>/dev/null | grep "out" | head -1)
+          
+          IMAGE=$(find . -name "Image" -type f 2>/dev/null | head -1)
+          
           if [ -n "$IMAGE" ]; then
             cp -v "$IMAGE" AnyKernel3/
-            find . -name "dtbo.img" -type f 2>/dev/null | grep "out" | xargs -I {} cp {} AnyKernel3/
+            find . -name "dtbo.img" -type f 2>/dev/null -exec cp {} AnyKernel3/ \;
             mkdir -p AnyKernel3/modules/lib/modules/
-            find . -name "*.ko" -type f 2>/dev/null | grep "out" | xargs -I {} cp {} AnyKernel3/modules/lib/modules/
-            cd AnyKernel3 && zip -r9 ../S25u-Custom-Kernel.zip ./* && cd ..
+            find . -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
+            
+            cd AnyKernel3
+            zip -r9 ../S25u-Custom-Kernel.zip ./*
+            cd ..
             mv S25u-Custom-Kernel.zip output/
           else
-            echo "未找到 Image 文件"
+            echo "错误：未找到 Image 文件，编译失败"
             exit 1
           fi
-
       - name: 上传构建产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25u-Custom-Kernel
+          name: S25u-Feng-Kernel
           path: output/
-
