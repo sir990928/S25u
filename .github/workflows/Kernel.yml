@@ -81,53 +81,30 @@ jobs:
           # 调用你的本地构建脚本，传入目标参数
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 打包 AnyKernel3 刷机包 (智能全路径搜索)
+      - name: 打包 AnyKernel3 刷机包
         run: |
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
-
-          echo "--- 正在从 out/ 目录智能定位产物 ---"
           
-          # 在整个 out 目录下搜寻最终生成的 dist 文件夹，并验证 Image 是否存在
-          REAL_DIST=$(find out -path "*/dist" -type d | while read -r dir; do
-            if [ -f "$dir/Image" ]; then
-              echo "$dir"
-              break
-            fi
-          done)
-
-          if [ -n "$REAL_DIST" ]; then
-            echo "✅ 成功锁定产物目录: $REAL_DIST"
-            
-            # 1. 拷贝内核镜像
-            cp -vf "$REAL_DIST/Image" AnyKernel3/
-            
-            # 2. 拷贝设备树 (dtbo.img)
-            if [ -f "$REAL_DIST/dtbo.img" ]; then
-              cp -vf "$REAL_DIST/dtbo.img" AnyKernel3/
-            fi
-            
-            # 3. 拷贝驱动模块 (*.ko)
+          IMAGE=$(find . -name "Image" -type f 2>/dev/null | head -1)
+          
+          if [ -n "$IMAGE" ]; then
+            cp -v "$IMAGE" AnyKernel3/
+            find . -name "dtbo.img" -type f 2>/dev/null -exec cp {} AnyKernel3/ \;
             mkdir -p AnyKernel3/modules/lib/modules/
-            find "$REAL_DIST" -name "*.ko" -exec cp -vf {} AnyKernel3/modules/lib/modules/ \;
+            find . -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
             
-            # 4. 执行 ZIP 打包
             cd AnyKernel3
-            zip -r9 ../SukiSU-Ultra-Kernel.zip ./* -x .git/*
+            zip -r9 ../S25u-Custom-Kernel.zip ./*
             cd ..
-            mv SukiSU-Ultra-Kernel.zip output/
-            echo "--- 打包流程顺利结束 ---"
+            mv S25u-Custom-Kernel.zip output/
           else
-            echo "❌ 提取失败：在 out 目录下未找到包含 Image 的 dist 文件夹。"
-            echo "--- 正在列出 out 目录结构供排查 ---"
-            find out -maxdepth 4
+            echo "错误：未找到 Image 文件，编译失败"
             exit 1
           fi
-
       - name: 上传构建产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SukiSU-Ultra-Kernel
+          name: S25u-Feng-Kernel
           path: output/
-
