@@ -21,55 +21,25 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 物理劫持 Python 构建引擎 (精准补丁版)
+      - name: 物理劫持 Python 构建引擎
         run: |
           PY_SCRIPT=$(find . -name "build_with_bazel.py" | head -1)
           
-          cat << 'EOF' > patcher.py
-import sys
+          # 使用简单的 sed 先处理掉语法敏感的 git checkout 行
+          # 将 git checkout 替换为简单的 echo 任务，保证括号匹配不乱
+          sed -i 's/subprocess.Popen(\["git", "checkout",/subprocess.Popen(["echo", "Skip",/g' "$PY_SCRIPT"
+          
+          # 直接物理替换名字生成逻辑
+          sed -i 's/localversion = "-{}-abogki{}".format(cl_sync, build_number)/localversion = "-SukiSU-Ultra"/g' "$PY_SCRIPT"
+          
+          # 劫持配置写入点：在 f.write(data) 之后追加我们的禁用项
+          # 我们利用 Python 的多行特性，在 data 赋值后插入我们的 extra 项
+          sed -i '/data = "{}={}\\n".format(key, value)/a \                f.write("CONFIG_UH=n\\nCONFIG_RKP=n\\nCONFIG_KDP=n\\nCONFIG_GAF=n\\nCONFIG_PROCA=n\\nCONFIG_SECURITY_DEFEX=n\\nCONFIG_INTEGRITY=n\\nCONFIG_FIVE=n\\nCONFIG_TRIM_UNUSED_KSYMS=n\\nCONFIG_KNOX_NCM=n\\nCONFIG_LOCALVERSION_AUTO=n\\nCONFIG_KPM=y\\nCONFIG_WERROR=n\\nCONFIG_LOCALVERSION=\\"-SukiSU-Ultra\\"\\n")' "$PY_SCRIPT"
 
-def patch():
-    with open(sys.argv[1], 'r') as f:
-        content = f.read()
-
-    # 1. 劫持 write_sec_env_sh_foramt (注入禁用项)
-    # 在 f.close() 之前强制写入我们的配置
-    old_sh_write = "f.close()"
-    new_sh_write = """
-        extra_configs = [
-            "CONFIG_UH=n", "CONFIG_RKP=n", "CONFIG_KDP=n", "CONFIG_GAF=n",
-            "CONFIG_PROCA=n", "CONFIG_SECURITY_DEFEX=n", "CONFIG_INTEGRITY=n",
-            "CONFIG_FIVE=n", "CONFIG_TRIM_UNUSED_KSYMS=n", "CONFIG_KNOX_NCM=n",
-            "CONFIG_LOCALVERSION_AUTO=n", "CONFIG_KPM=y", "CONFIG_WERROR=n",
-            'CONFIG_LOCALVERSION="-SukiSU-Ultra"'
-        ]
-        for cfg in extra_configs:
-            f.write(cfg + "\\n")
-        f.close()
-"""
-    # 注意：这里需要精准匹配函数内的 close
-    content = content.replace("self.write_sec_env_sh_foramt(os.path.join(self.workspace, \"msm-kernel\", \"build.config.sec_env\"))", 
-                             "pass # Logic moved") # 我们改用直接修改函数体的方式
-
-    # 2. 修改 localversion 生成逻辑
-    content = content.replace('localversion = "-{}-abogki{}".format(cl_sync, build_number)', 
-                             'localversion = "-SukiSU-Ultra"')
-
-    # 3. 彻底屏蔽最后阶段的 git checkout (防止语法错误，直接清空 cmdline)
-    content = content.replace('subprocess.Popen(["git", "checkout"', 'subprocess.Popen(["echo", "Skip Checkout"')
-
-    with open(sys.argv[1], 'w') as f:
-        f.write(content)
-
-if __name__ == "__main__":
-    patch()
-EOF
-          python3 patcher.py "$PY_SCRIPT"
-          echo "✅ Python 引擎手术完成"
+          echo "✅ Python 引擎手术完成，已避开 YAML 语法坑"
 
       - name: 开始 Bazel 构建
         run: |
-          # 设置基础变量以通过脚本初期校验
           export CL_SYNC="SukiSU"
           export BUILD_NUMBER="Ultra"
           
@@ -80,6 +50,7 @@ EOF
         run: |
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
+          
           IMAGE=$(find . -name "Image" -type f 2>/dev/null | head -1)
           if [ -n "$IMAGE" ]; then
             cp -v "$IMAGE" AnyKernel3/
