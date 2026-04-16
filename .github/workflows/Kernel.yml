@@ -34,66 +34,51 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 注入自定义内核配置 (关闭安全项 & 更名 SukiSU)
+      - name: 动态注入魔改逻辑到入口脚本
         run: |
-          # 寻找核心配置文件 build.config.msm.perf
-          CONFIG_FILE=$(find . -name "build.config.msm.perf" | grep "msm-kernel" | head -1)
+          # 创建临时配置块
+          # 1. CL_SYNC 和 BUILD_NUMBER 解决 Python 脚本强制写 localversion 的问题
+          # 2. SEC_BUILD_OPTION_KNOX_CSB 解决 sec_env.mk 强制开启 Knox 的问题
+          # 3. EXTRA_KBUILD_ARGS 利用 Kleaf 原生能力强制覆盖 .config
+          cat <<EOF > custom_vars.tmp
 
-          if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
-            echo "找到配置文件: $CONFIG_FILE"
+# --- [SukiSU CUSTOM INJECT] ---
+export CL_SYNC="SukiSU"
+export BUILD_NUMBER="Ultra"
+export SEC_BUILD_OPTION_KNOX_CSB="n"
+export SEC_PRODUCT_SHIP="n"
+export SKIP_DEFCONFIG_VALIDATION=1
+export SKIP_CONFIG_CHECK=1
+export KCONFIG_WERROR=false
+export EXTRA_KBUILD_ARGS="--kconfig_add=CONFIG_UH=n --kconfig_add=CONFIG_RKP=n --kconfig_add=CONFIG_KDP=n --kconfig_add=CONFIG_GAF=n --kconfig_add=CONFIG_PROCA=n --kconfig_add=CONFIG_SECURITY_DEFEX=n --kconfig_add=CONFIG_INTEGRITY=n --kconfig_add=CONFIG_FIVE=n --kconfig_add=CONFIG_TRIM_UNUSED_KSYMS=n --kconfig_add=CONFIG_KNOX_NCM=n --kconfig_add=CONFIG_LOCALVERSION_AUTO=n --kconfig_add=CONFIG_SEC_KNOX=n --kconfig_add=CONFIG_KPM=y --kconfig_add=CONFIG_WERROR=n --kconfig_add=CONFIG_LOCALVERSION=\"-SukiSU-Ultra\""
+# --- [END OF INJECT] ---
 
-            # 注入配置修正函数，强制在配置生成后拦截并修改
-            printf "\nfunction my_final_config_fixup() {\n" >> "$CONFIG_FILE"
-            printf "    echo \"--- [S25U CUSTOM] 正在执行配置修正... ---\"\n" >> "$CONFIG_FILE"
-            # 屏蔽三星安全校验项
-            printf "    local DISABLE_OPTS=(\"CONFIG_UH\" \"CONFIG_RKP\" \"CONFIG_KDP\" \"CONFIG_GAF\" \"CONFIG_PROCA\" \"CONFIG_SECURITY_DEFEX\" \"CONFIG_INTEGRITY\" \"CONFIG_FIVE\" \"CONFIG_TRIM_UNUSED_KSYMS\" \"CONFIG_KNOX_NCM\" \"CONFIG_LOCALVERSION_AUTO\")\n" >> "$CONFIG_FILE"
-            printf "    for opt in \"\${DISABLE_OPTS[@]}\"; do\n" >> "$CONFIG_FILE"
-            printf "        sed -i \"/^\$opt=/d\" \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
-            printf "        sed -i \"/^# \$opt is not set/d\" \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
-            printf "        echo \"# \$opt is not set\" >> \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
-            printf "    done\n" >> "$CONFIG_FILE"
-            # 强制开启 KPM 并应用自定义内核名称
-            printf "    sed -i \"/^CONFIG_KPM=/d\" \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
-            printf "    echo \"CONFIG_KPM=y\" >> \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
-            printf "    local MY_KNAME=\"-SukiSU-Ultra\"\n" >> "$CONFIG_FILE"
-            printf "    sed -i \"s/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=\\\"\$MY_KNAME\\\"/\" \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
-            printf "    if ! grep -q \"CONFIG_LOCALVERSION=\" \${OUT_DIR}/.config; then echo \"CONFIG_LOCALVERSION=\\\"\$MY_KNAME\\\"\" >> \${OUT_DIR}/.config; fi\n" >> "$CONFIG_FILE"
-            printf "    sed -i \"s/^CONFIG_WERROR=y/# CONFIG_WERROR is not set/\" \${OUT_DIR}/.config\n" >> "$CONFIG_FILE"
-            # 同步配置依赖关系
-            printf "    (cd \${KERNEL_DIR} && make O=\${OUT_DIR} \${MAKE_ARGS} olddefconfig)\n" >> "$CONFIG_FILE"
-            printf "    echo \"--- [S25U CUSTOM] 修正完成！ ---\"\n" >> "$CONFIG_FILE"
-            printf "}\n" >> "$CONFIG_FILE"
-            printf "append_cmd POST_DEFCONFIG_CMDS 'my_final_config_fixup'\n" >> "$CONFIG_FILE"
-
-            echo "注入完成，内核名设为 -SukiSU-Ultra"
-          else
-            echo "错误：未找到构建配置文件" && exit 1
-          fi
+EOF
+          # 将配置块插入到入口脚本的 #!/bin/bash 之后（即第二行）
+          sed -i '2r custom_vars.tmp' build_kernel_GKI.sh
+          
+          echo "✅ 入口脚本魔改完成，当前头部预览："
+          head -n 30 build_kernel_GKI.sh
 
       - name: 开始 Bazel 构建
         run: |
-          # 设置全局绕过参数
-          export KCONFIG_WERROR=false
-          export SKIP_DEFCONFIG_VALIDATION=1
-          export SKIP_CONFIG_CHECK=1
-          export SKIP_ABI_CHECK=1
-          export GKI_KMI_ENFORCED=0
-          # 调用你的本地构建脚本，传入目标参数
+          chmod +x build_kernel_GKI.sh
+          # 直接运行魔改后的脚本
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: 打包 AnyKernel3 刷机包
         run: |
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
-          
+
           IMAGE=$(find . -name "Image" -type f 2>/dev/null | head -1)
-          
+
           if [ -n "$IMAGE" ]; then
             cp -v "$IMAGE" AnyKernel3/
             find . -name "dtbo.img" -type f 2>/dev/null -exec cp {} AnyKernel3/ \;
             mkdir -p AnyKernel3/modules/lib/modules/
             find . -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
-            
+
             cd AnyKernel3
             zip -r9 ../S25u-Custom-Kernel.zip ./*
             cd ..
@@ -102,9 +87,11 @@ jobs:
             echo "错误：未找到 Image 文件，编译失败"
             exit 1
           fi
+
       - name: 上传构建产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: S25u-Feng-Kernel
           path: output/
+
