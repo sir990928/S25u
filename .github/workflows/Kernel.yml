@@ -29,11 +29,6 @@ jobs:
       - name: 格式规范化
         run: find . -name "*.sh" -exec dos2unix {} + || true
 
-      - name: 注入 KernelSU 源码
-        run: |
-          cd kernel_platform/common
-          curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
-
       - name: 物理劫持 Python 构建引擎 (msm-kernel 路径专用)
         run: |
           # 1. 设置目标脚本的绝对路径
