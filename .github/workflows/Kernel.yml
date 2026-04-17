@@ -11,16 +11,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Bazel build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/bazel
-            out/
-          key: ${{ runner.os }}-bazel-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-bazel-
-
       - name: 环境依赖
         run: |
           sudo apt update -y
@@ -31,12 +21,15 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 替换成你的 S25.config
+      - name: 偷梁换柱 - 强行注入 S25.config
         run: |
-          FILE="kernel_platform/build/kernel/android/prepare_vendor.sh"
-          sed -i 's!^.*build/brunch.*$!# &!' "$FILE"
-          sed -i '/#.*build\/brunch/a \  mkdir -p "${ROOT_DIR}/../out/msm-sun-sun-perf"' "$FILE"
-          sed -i '/#.*build\/brunch/a \  cp -f "${ROOT_DIR}/S25.config" "${ROOT_DIR}/../out/msm-sun-sun-perf/.config"' "$FILE"
+          # 我们不再依赖 vendor 脚本的流程，直接把你的 config 塞进它最终读取的位置
+          # 这样即便它后面跑什么 prepare_vendor，读取的也是我们准备好的真身
+          mkdir -p out/msm-sun-sun-perf
+          cp -f kernel_platform/S25.config out/msm-sun-sun-perf/.config
+          # 顺便给 kernel_platform 下也备份一份，防止它从不同路径读取
+          mkdir -p kernel_platform/out/msm-sun-sun-perf
+          cp -f kernel_platform/S25.config kernel_platform/out/msm-sun-sun-perf/.config
 
       - name: 开始编译
         run: |
@@ -46,28 +39,62 @@ jobs:
           export SEC_PRODUCT_SHIP="n"
           export SKIP_DEFCONFIG_VALIDATION=1
           chmod +x build_kernel_GKI.sh
+          # 直接运行主编译脚本，忽略它的 vendor 校验
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 打包 AnyKernel3
+      - name: 根目录全量扫荡与暴力打包
         run: |
           mkdir -p output
+          # 1. 准备 AnyKernel3 环境
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
+          
+          # 创建临时汇总仓
+          mkdir -p dtbo_collection
+          mkdir -p ko_collection
 
-          IMAGE=$(find . -name "Image" -type f 2>/dev/null | head -1)
-          if [ -n "$IMAGE" ]; then
-            cp -v "$IMAGE" AnyKernel3/
-            find . -name "dtbo.img" -type f 2>/dev/null -exec cp {} AnyKernel3/ \;
-            mkdir -p AnyKernel3/modules/lib/modules/
-            find . -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
-            cd AnyKernel3
-            zip -r9 ../S25u-Custom-Kernel.zip ./*
-            cd ..
-            mv S25u-Custom-Kernel.zip output/
+          # 2. 【从根目录开始扫荡所有 .dtbo】
+          # 不管它在 kernel_platform/out 还是根目录 out，全部抓过来
+          echo "正在全路径搜刮 .dtbo 碎片..."
+          find . -name "*.dtbo" -type f -not -path "./AnyKernel3/*" -exec cp -f {} dtbo_collection/ \;
+
+          # 3. 【手动合成 20MB 完全体 DTBO】
+          # 使用你定位到的绝对路径工具
+          MKDTBOIMG="kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg"
+          if [ -f "$MKDTBOIMG" ]; then
+            echo "开始合成全量设备树..."
+            $MKDTBOIMG create AnyKernel3/dtbo.img dtbo_collection/*.dtbo
+            echo "合成完成，最终体积：$(du -h AnyKernel3/dtbo.img)"
+          else
+            echo "错误：未找到合成工具，尝试抓取体积最大的成品..."
+            find . -name "dtbo.img" -type f -not -path "./AnyKernel3/*" -exec ls -l {} + | sort -nk 5 | tail -1 | awk '{print $NF}' | xargs -I{} cp -f {} AnyKernel3/dtbo.img
           fi
 
-      - name: 上传
+          # 4. 【从根目录开始扫荡所有 .ko】
+          echo "正在全路径搜刮内核驱动..."
+          find . -name "*.ko" -type f -not -path "./AnyKernel3/*" -exec cp -f {} ko_collection/ \;
+          mkdir -p AnyKernel3/modules/lib/modules/
+          cp -af ko_collection/. AnyKernel3/modules/lib/modules/
+
+          # 5. 【获取核心内核 Image】
+          # 同样从根目录扫荡，优先取带 dist 路径的
+          IMAGE=$(find . -name "Image" -type f -path "*/dist/*" | head -1)
+          [ -z "$IMAGE" ] && IMAGE=$(find . -name "Image" -type f | head -1)
+          
+          if [ -n "$IMAGE" ]; then
+            cp -f "$IMAGE" AnyKernel3/Image
+            # 6. 【打包成品】
+            cd AnyKernel3
+            zip -r9 ../S25u-SukiSU-Kernel.zip ./*
+            cd ..
+            mv S25u-SukiSU-Kernel.zip output/
+          else
+            echo "致命错误：没找到 Image，编译可能失败了！"
+            exit 1
+          fi
+
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: S25u-Custom-Kernel
+          name: S25u-Custom-Kernel-Final
           path: output/
 
