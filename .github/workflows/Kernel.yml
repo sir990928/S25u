@@ -36,7 +36,7 @@ jobs:
 
       - name: 替换内核配置为自定义 S25.config
         run: |
-          FILE="kernel_platform/build/prepare_vendor.sh"
+          FILE="kernel_platform/build/kernel/android/prepare_vendor.sh"
           sed -i 's/^.*\/brunch.*$/#&/' "$FILE"
           sed -i '/#.*\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}' "$FILE"
           sed -i '/#.*\/brunch/a \  cp -f S25.config "${OUT_DIR}/.config"' "$FILE"
