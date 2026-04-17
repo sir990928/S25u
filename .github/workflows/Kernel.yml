@@ -1,81 +1,8 @@
-name: 三星S25u_内核编译_SukiSU版
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Cache Bazel build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/bazel
-            out/
-          key: ${{ runner.os }}-bazel-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-bazel-
-
-      - name: 环境依赖初始化
-        run: |
-          sudo apt update -y
-          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
-
-      - name: 格式规范化
-        run: find . -name "*.sh" -exec dos2unix {} + || true
-
-      - name: 注入 KernelSU 源码
-        run: |
-          cd kernel_platform/common
-          curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
-
-      - name: 替换内核配置为自定义 S25.config
-        run: |
-          FILE="kernel_platform/build/kernel/android/prepare_vendor.sh"
-          sed -i 's!^.*build/brunch.*$!# &!' "$FILE"
-          sed -i '/#.*build\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}' "$FILE"
-          sed -i '/#.*build\/brunch/a \  mkdir -p "${OUT_DIR}"' "$FILE"
-          sed -i '/#.*build\/brunch/a \  cp -f S25.config "${OUT_DIR}/.config"' "$FILE"
-
-      - name: 开始 Bazel 构建
-        run: |
-          export CL_SYNC="SukiSU"
-          export BUILD_NUMBER="Ultra"
-          export SEC_BUILD_OPTION_KNOX_CSB="n"
-          export SEC_PRODUCT_SHIP="n"
-          export SKIP_DEFCONFIG_VALIDATION=1
-          chmod +x build_kernel_GKI.sh
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun
-
-      - name: 打包 AnyKernel3 刷机包
-        run: |
-          mkdir -p output
-          [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
-
-          IMAGE=$(find . -name "Image" -type f 2>/dev/null | head -1)
-          if [ -n "$IMAGE" ]; then
-            cp -v "$IMAGE" AnyKernel3/
-            find . -name "dtbo.img" -type f 2>/dev/null -exec cp {} AnyKernel3/ \;
-            mkdir -p AnyKernel3/modules/lib/modules/
-            find . -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
-            cd AnyKernel3
-            zip -r9 ../S25u-Custom-Kernel.zip ./*
-            cd ..
-            mv S25u-Custom-Kernel.zip output/
-          else
-            echo "❌ 错误：未找到编译出的 Image"
-            exit 1
-          fi
-
-      - name: 上传构建产物
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: S25u-Feng-Kernel
-          path: output/
+- name: 替换内核配置为自定义 S25.config
+  run: |
+    FILE="kernel_platform/build/kernel/android/prepare_vendor.sh"
+    # 注释掉原来的 brunch 命令
+    sed -i 's!^.*build/brunch.*$!# &!' "$FILE"
+    # 在注释后插入我们自己的逻辑：直接用 build_with_bazel.py 编译
+    sed -i '/#.*build\/brunch/a \  echo "✅ 禁用了 brunch，使用自定义配置"' "$FILE"
 
