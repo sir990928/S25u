@@ -34,14 +34,13 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 替换内核配置为自定义 S25.config
-        run: |
-          FILE="kernel_platform/build/kernel/android/prepare_vendor.sh"
-          sed -i 's/^.*\/brunch.*$/#&/' "$FILE"
-          sed -i '/#.*\/brunch/a \  mkdir -p "${OUT_DIR}"' "$FILE"
-          sed -i '/#.*\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}' "$FILE"
-          sed -i '/#.*\/brunch/a \  cp -f S25.config "${OUT_DIR}/.config"' "$FILE"
-          echo "✅ 已禁用自动合并，强制使用自定义 S25.config"
+- name: 替换内核配置为自定义 S25.config
+  run: |
+    FILE="kernel_platform/build/kernel/android/prepare_vendor.sh"
+    sed -i 's/^.*\/brunch.*$/#&/' "$FILE"
+    sed -i '/#.*\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}' "$FILE"
+    sed -i '/#.*\/brunch/a \  mkdir -p "${OUT_DIR}"' "$FILE"
+    sed -i '/#.*\/brunch/a \  cp -f S25.config "${OUT_DIR}/.config"' "$FILE"
 
       - name: 开始 Bazel 构建
         run: |
