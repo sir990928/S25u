@@ -34,35 +34,35 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 深度入侵编译系统 (适配完整 S25.config)
+      - name: 深度入侵核心编译脚本 (适配 kbuild_with_bazel.py)
         run: |
           FILE_PV="kernel_platform/build/kernel/android/prepare_vendor.sh"
-          FILE_BZ="kernel_platform/build_with_bazel.py"
+          FILE_KBZ="kernel_platform/msm-kernel/kbuild_with_bazel.py"
           
-          # 1. 魔改 prepare_vendor.sh
-          # 注释掉 brunch，直接将你的完整 S25.config 注入到输出目录和源码目录
+          # 1. 魔改 prepare_vendor.sh：把你的完整 S25.config 强行喂给所有可能的位置
           sed -i 's/^.*\/brunch.*$/#&/' "$FILE_PV"
           sed -i '/#.*\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}\n  mkdir -p "${OUT_DIR}"\n  cp -f ${ROOT_DIR}/S25.config "${OUT_DIR}/.config"\n  cp -f ${ROOT_DIR}/S25.config ${ROOT_DIR}/msm-kernel/arch/arm64/configs/vendor/sun_perf.config' "$FILE_PV"
           
-          # 2. 物理掉包官方配置 (双重保险)
+          # 2. 物理掉包官方配置，防止 Bazel 回溯官方定义
           sed -i '/RECOMPILE_KERNEL.*==.*1/a \  cp -f ${ROOT_DIR}/S25.config ${ROOT_DIR}/msm-kernel/arch/arm64/configs/vendor/sun_perf.config' "$FILE_PV"
 
-          # 3. 入侵 build_with_bazel.py (彻底禁用所有校验)
-          if [ -f "$FILE_BZ" ]; then
-            # A. 强行塞入禁用校验的 Bazel 参数
-            sed -i '/self.user_opts = user_opts/a \        self.user_opts.extend(["--notest_defconfig", "--kconfig_add_symbol_list=/dev/null"])' "$FILE_BZ"
+          # 3. 入侵 kbuild_with_bazel.py (彻底禁用所有配置比对逻辑)
+          if [ -f "$FILE_KBZ" ]; then
+            # A. 强行屏蔽 check_diff 的逻辑，让它永远不发现文件变化
+            sed -i 's/return any(diff)/return False/g' "$FILE_KBZ" || true
             
-            # B. 禁用 check_diff 函数，让它永远不触发“检测到差异”的逻辑
-            sed -i 's/return any(diff)/return False/g' "$FILE_BZ"
+            # B. 禁用 git checkout，防止你的 S25.config 在编译前或出错时被脚本撤销
+            sed -i 's/subprocess.Popen(\["git", "checkout"/subprocess.Popen(["true"/g' "$FILE_KBZ" || true
             
-            # C. 屏蔽所有的 git checkout 恢复逻辑，保护我们掉包的 sun_perf.config 不被还原
-            sed -i 's/subprocess.Popen(\["git", "checkout"/subprocess.Popen(["true"/g' "$FILE_BZ"
-            
-            # D. 屏蔽 clean_legacy_generated_files，防止它删掉我们刚刚生成的配置文件
-            sed -i 's/self.clean_legacy_generated_files()/# self.clean_legacy_generated_files()/g' "$FILE_BZ"
+            # C. 屏蔽 clean_legacy_generated_files，防止它清理掉我们注入的配置
+            sed -i 's/self.clean_legacy_generated_files()/# self.clean_legacy_generated_files()/g' "$FILE_KBZ" || true
+
+            # D. 关键：直接在脚本内部注入 --notest_defconfig 参数给 Bazel
+            # 找到 user_opts 列表初始化的位置并强行插入
+            sed -i '/self.user_opts = user_opts/a \        self.user_opts.extend(["--notest_defconfig", "--kconfig_add_symbol_list=/dev/null"])' "$FILE_KBZ" || true
           fi
 
-          echo "✅ 针对完整配置的系统入侵完成"
+          echo "✅ 针对 kbuild_with_bazel.py 的入侵完成"
 
       - name: 开始 Bazel 构建
         run: |
@@ -70,9 +70,14 @@ jobs:
           export BUILD_NUMBER="Ultra"
           export SKIP_DEFCONFIG_VALIDATION=1
           export SEC_BUILD_OPTION_KNOX_CSB="n"
+          export SEC_PRODUCT_SHIP="n"
           
-          # 检查文件位置
-          ls -l kernel_platform/S25.config
+          # 确认文件就在 kernel_platform 根目录
+          if [ ! -f kernel_platform/S25.config ]; then
+             echo "❌ 错误：在 kernel_platform/S25.config 找不到文件！"
+             ls -R kernel_platform/
+             exit 1
+          fi
           
           chmod +x build_kernel_GKI.sh
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
@@ -82,7 +87,7 @@ jobs:
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
 
-          # 寻找编译出的镜像 (注意路径可能在 kernel_platform/out)
+          # 寻找 Image 产物
           IMAGE=$(find kernel_platform/out -name "Image" -type f 2>/dev/null | head -1)
           if [ -n "$IMAGE" ]; then
             cp -v "$IMAGE" AnyKernel3/
@@ -91,11 +96,12 @@ jobs:
             find kernel_platform/out -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
             
             cd AnyKernel3
-            zip -r9 ../S25u-Custom-Kernel.zip ./*
+            zip -r9 ../S25u-SukiSU-Custom.zip ./*
             cd ..
-            mv S25u-Custom-Kernel.zip output/
+            mv S25u-SukiSU-Custom.zip output/
+            echo "✅ 刷机包打包成功"
           else
-            echo "❌ 错误：未找到 Image，请检查日志"
+            echo "❌ 错误：未找到 Image，请检查编译日志中的 build_with_bazel.py 错误"
             exit 1
           fi
 
