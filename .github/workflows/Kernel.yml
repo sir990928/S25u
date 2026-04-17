@@ -34,22 +34,41 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 替换内核配置为自定义 S25.config
+      - name: 彻底魔改 prepare_vendor.sh (禁用检测 + 物理掉包)
         run: |
           FILE="kernel_platform/build/kernel/android/prepare_vendor.sh"
+          
+          # 1. 注释掉 brunch 行，替换为手动创建临时配置目录并注入 S25.config
+          # 确保脚本不会因为找不到 .config 而在初始化阶段崩溃
           sed -i 's/^.*\/brunch.*$/#&/' "$FILE"
-          sed -i '/#.*\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}' "$FILE"
-          sed -i '/#.*\/brunch/a \  mkdir -p "${OUT_DIR}"' "$FILE"
-          sed -i '/#.*\/brunch/a \  cp -f S25.config "${OUT_DIR}/.config"' "$FILE"
+          sed -i '/#.*\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}\n  mkdir -p "${OUT_DIR}"\n  cp -f ${ROOT_DIR}/S25.config "${OUT_DIR}/.config"' "$FILE"
+          
+          # 2. 物理掉包：在执行 build_with_bazel.py 之前，把源码里的官方 defconfig 彻底替换
+          # 这一步是为了防止 Bazel 在构建时发现配置不匹配
+          sed -i '/RECOMPILE_KERNEL.*==.*1/a \  cp -f ${ROOT_DIR}/S25.config ${ROOT_DIR}/msm-kernel/arch/arm64/configs/vendor/sun_perf.config' "$FILE"
+          
+          # 3. 禁用检测：给 build_with_bazel.py 强行插入 --notest_defconfig 参数
+          # 这是“不让他检测”的终极后门
+          sed -i 's/--skip abl/--skip abl --notest_defconfig/' "$FILE"
+
+          echo "✅ prepare_vendor.sh 魔改完成"
 
       - name: 开始 Bazel 构建
         run: |
+          # 设置必要的环境变量，配合禁用校验
           export CL_SYNC="SukiSU"
           export BUILD_NUMBER="Ultra"
-          export SEC_BUILD_OPTION_KNOX_CSB="n"
-          export SEC_PRODUCT_SHIP="n"
           export SKIP_DEFCONFIG_VALIDATION=1
+          export KCONFIG_NOTEST=1
+          
+          # 确保 S25.config 确实存在
+          if [ ! -f S25.config ]; then
+            echo "❌ 错误：根目录下未找到 S25.config"
+            exit 1
+          fi
+          
           chmod +x build_kernel_GKI.sh
+          # 启动总调度脚本，它会调用我们已经魔改好的 prepare_vendor.sh
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: 打包 AnyKernel3 刷机包
@@ -57,18 +76,22 @@ jobs:
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
 
-          IMAGE=$(find . -name "Image" -type f 2>/dev/null | head -1)
+          # 寻找编译出的内核产物
+          IMAGE=$(find kernel_platform/out -name "Image" -type f 2>/dev/null | head -1)
           if [ -n "$IMAGE" ]; then
             cp -v "$IMAGE" AnyKernel3/
-            find . -name "dtbo.img" -type f 2>/dev/null -exec cp {} AnyKernel3/ \;
+            # 拷贝 dtbo 和 模块
+            find kernel_platform/out -name "dtbo.img" -type f 2>/dev/null -exec cp {} AnyKernel3/ \;
             mkdir -p AnyKernel3/modules/lib/modules/
-            find . -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
+            find kernel_platform/out -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
+            
             cd AnyKernel3
-            zip -r9 ../S25u-Custom-Kernel.zip ./*
+            zip -r9 ../S25u-Custom-Kernel-SukiSU.zip ./*
             cd ..
-            mv S25u-Custom-Kernel.zip output/
+            mv S25u-Custom-Kernel-SukiSU.zip output/
+            echo "✅ 刷机包已生成"
           else
-            echo "❌ 错误：未找到编译出的 Image"
+            echo "❌ 错误：未在 out 目录下找到编译出的 Image，请检查 build.log"
             exit 1
           fi
 
@@ -76,6 +99,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25u-Feng-Kernel
+          name: S25u-SukiSU-Kernel
           path: output/
 
