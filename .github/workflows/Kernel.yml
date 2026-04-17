@@ -37,7 +37,7 @@ jobs:
       - name: 深度入侵核心编译脚本 (适配 kbuild_with_bazel.py)
         run: |
           FILE_PV="kernel_platform/build/kernel/android/prepare_vendor.sh"
-          FILE_KBZ="kernel_platform/msm-kernel/kbuild_with_bazel.py"
+          FILE_KBZ="kernel_platform/msm-kernel/build_with_bazel.py"
           
           # 1. 魔改 prepare_vendor.sh：把你的完整 S25.config 强行喂给所有可能的位置
           sed -i 's/^.*\/brunch.*$/#&/' "$FILE_PV"
