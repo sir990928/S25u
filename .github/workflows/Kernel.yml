@@ -29,36 +29,21 @@ jobs:
       - name: 格式规范化
         run: find . -name "*.sh" -exec dos2unix {} + || true
 
-      - name: 物理劫持 Python 构建引擎 (msm-kernel 路径专用)
+      - name: 注入 KernelSU 源码
         run: |
-          # 1. 设置目标脚本的绝对路径
-          PY_SCRIPT="kernel_platform/msm-kernel/build_with_bazel.py"
-          
-          if [ -f "$PY_SCRIPT" ]; then
-            echo "✅ 成功找到内核构建核心脚本: $PY_SCRIPT"
-            
-            # 2. 物理阉割：拦截脚本最后的 Git 还原逻辑
-            # 将 git checkout 替换为 echo，保留括号匹配，彻底防止脚本自动抹除我们的修改
-            sed -i 's/subprocess.Popen(\["git", "checkout",/subprocess.Popen(["echo", "Skip Checkout",/g' "$PY_SCRIPT"
+          cd kernel_platform/common
+          curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-            # 3. 核心手术：劫持配置文件写入流 (write_sec_env_sh_foramt)
-            # 在脚本循环写入环境变量的语句后，强行插入您的禁用列表
-            # 这里包含了所有您要求的 CONFIG 屏蔽项和强制改名项
-            sed -i '/data = "{}={}\\n".format(key, value)/a \                f.write("CONFIG_UH=n\\nCONFIG_RKP=n\\nCONFIG_KDP=n\\nCONFIG_GAF=n\\nCONFIG_PROCA=n\\nCONFIG_SECURITY_DEFEX=n\\nCONFIG_INTEGRITY=n\\nCONFIG_FIVE=n\\nCONFIG_TRIM_UNUSED_KSYMS=n\\nCONFIG_KNOX_NCM=n\\nCONFIG_LOCALVERSION_AUTO=n\\nCONFIG_KPM=y\\nCONFIG_WERROR=n\\nCONFIG_LOCALVERSION=\\"-SukiSU-Ultra\\"\\n")' "$PY_SCRIPT"
-
-            # 4. 变量硬编码：修改 localversion 字符串的计算公式
-            # 让脚本无论接收到什么参数，输出的版本后缀永远是 -SukiSU-Ultra
-            sed -i 's/localversion = "-{}-abogki{}".format(cl_sync, build_number)/localversion = "-SukiSU-Ultra"/g' "$PY_SCRIPT"
-            
-            echo "🚀 脚本内部逻辑重构完成，Knox 屏蔽项已锁定"
-          else
-            echo "❌ 错误：在指定路径未找到脚本，请确认源码结构是否正确"
-            exit 1
-          fi
+      - name: 替换内核配置为自定义 S25.config
+        run: |
+          FILE="kernel_platform/build/prepare_vendor.sh"
+          sed -i 's/^.*\/brunch.*$/#&/' "$FILE"
+          sed -i '/#.*\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}' "$FILE"
+          sed -i '/#.*\/brunch/a \  cp -f S25.config "${OUT_DIR}/.config"' "$FILE"
+          echo "✅ 已禁用自动合并，强制使用自定义 S25.config"
 
       - name: 开始 Bazel 构建
         run: |
-          # 导出基础变量以通过 Python 脚本的初始校验
           export CL_SYNC="SukiSU"
           export BUILD_NUMBER="Ultra"
           export SEC_BUILD_OPTION_KNOX_CSB="n"
@@ -66,7 +51,6 @@ jobs:
           export SKIP_DEFCONFIG_VALIDATION=1
           
           chmod +x build_kernel_GKI.sh
-          # 请确保 build_kernel_GKI.sh 在根目录或对应路径下
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: 打包 AnyKernel3 刷机包
@@ -74,14 +58,12 @@ jobs:
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
 
-          # 寻找编译生成的镜像文件
           IMAGE=$(find . -name "Image" -type f 2>/dev/null | head -1)
 
           if [ -n "$IMAGE" ]; then
             cp -v "$IMAGE" AnyKernel3/
             find . -name "dtbo.img" -type f 2>/dev/null -exec cp {} AnyKernel3/ \;
             
-            # 处理模块 (KO文件)
             mkdir -p AnyKernel3/modules/lib/modules/
             find . -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
 
