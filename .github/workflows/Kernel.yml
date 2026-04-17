@@ -37,9 +37,8 @@ jobs:
       - name: 替换内核配置为自定义 S25.config
         run: |
           FILE="kernel_platform/build/kernel/android/prepare_vendor.sh"
-          sed -i 's/^.*\/brunch.*$/#&/' "$FILE"
-          sed -i '/#.*\/brunch/a \  mkdir -p ../out/msm-sun-sun-perf' "$FILE"
-          sed -i '/#.*\/brunch/a \  cp -f S25.config ../out/msm-sun-sun-perf/.config' "$FILE"
+          sed -i 's/^.*\/build\/brunch.*$/#&/' "$FILE"
+          sed -i '/#.*build\/brunch/a \  cp -f S25.config "$ANDROID_KP_OUT_DIR"/.config' "$FILE"
 
       - name: 开始 Bazel 构建
         run: |
