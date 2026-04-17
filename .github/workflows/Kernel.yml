@@ -21,105 +21,107 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 编译内核与“偷梁换柱”注入配置
+      - name: 编译内核并执行“偷梁换柱”
         run: |
-          # 核心容错：屏蔽设备树警告，防止三星脚本自杀
+          # 核心容错：不把警告当错误，防止设备树警告导致进程自杀
           export ALLOW_WERROR=0
           export SKIP_DEFCONFIG_VALIDATION=1
           export DTC_FLAGS="-Wno-graph_endpoint -Wno-unit_address_vs_reg"
           
-          # 暴力抹除源码中所有的 Werror 限制
+          # 暴力抹除源码中所有的警告转错误限制 (-Werror)
           find . -name "Makefile" -o -name "*.bazel" -o -name "*.bzl" | xargs sed -i 's/-Werror//g' || true
 
           chmod +x build_kernel_GKI.sh
 
-          # 1. 后台启动编译
+          # 1. 后台启动编译 (build_kernel_GKI.sh 在根目录)
           bash build_kernel_GKI.sh pa3q_chn_openx user sun &
           BUILD_PID=$!
 
-          # 2. 动态捕获真身 .config 并覆盖
-          echo "正在监控 .config 生成..."
+          # 2. 动态捕获真身 .config 并强制覆盖
+          echo "正在监控深层 .config 生成..."
           while true; do
+            # 锁定内核真正读取的临时配置文件路径
             REAL_CONFIG=$(find kernel_platform/bazel-out -name ".config" | grep "kernel_aarch64_config/out_dir/.config" | head -1)
             
             if [ -n "$REAL_CONFIG" ] && [ -f "$REAL_CONFIG" ]; then
               echo "✅ 捕获到真身：$REAL_CONFIG"
+              echo "🚀 正在注入你的完整 S25.config..."
               cp -f kernel_platform/S25.config "$REAL_CONFIG"
-              echo "🚀 偷梁换柱成功，配置已锁定！"
+              echo "覆盖成功，内核将按照你的全量配置继续编译。"
               break
             fi
 
+            # 安全检查：如果编译进程挂了，立即报错退出
             if ! kill -0 $BUILD_PID 2>/dev/null; then
-              echo "❌ 编译进程意外停止，请检查日志报错。"
+              echo "❌ 编译进程已提前退出，请检查上方日志中的报错内容。"
               exit 1
             fi
             sleep 5
           done
 
-          # 3. 回到前台等待编译结束
+          # 3. 回到前台等待编译圆满完成
           wait $BUILD_PID
 
-      - name: 产物地毯式搜刮与暴力合成 (20MB 模式)
+      - name: 根目录全路径搜刮与暴力合成 (20MB 目标)
         run: |
-          # 确保从 build_kernel_GKI.sh 所在的当前目录开始
-          WORKING_DIR=$(pwd)
-          echo "搜索起点设置为: $WORKING_DIR"
-          
+          # 此时 build_kernel_GKI.sh 运行完毕，我们还在根目录
           mkdir -p output
           mkdir -p dtbo_collection
           mkdir -p ko_collection
 
           # 1. 【地毯式搜刮 .dtbo】
-          # 严格从当前目录 (.) 开始，不排除任何子目录
-          echo "开始全路径搜刮设备树碎片..."
+          # 从当前根目录 (.) 开始，不排除任何角落，通过重命名找回消失的 10MB 碎片
+          echo "开始从根目录执行全路径重命名搜刮..."
           count_dtbo=0
           find . -name "*.dtbo" -type f | while read -r file; do
             count_dtbo=$((count_dtbo+1))
-            # 路径转名，防止同名覆盖导致体积缩水
-            # 比如 a/b/c.dtbo 变成 a_b_c.dtbo
+            # 将路径转为文件名的一部分，确保每一个碎片都是独立的，不被覆盖
             safe_name=$(echo "$file" | sed 's/^\.\///; s/\//_/g')
             cp -f "$file" "dtbo_collection/${safe_name}"
           done
-          echo "✅ 共捕获到 $count_dtbo 个碎片"
+          echo "✅ 成功捕获 $count_dtbo 个设备树碎片！"
 
-          # 2. 【合成完全体 DTBO】
+          # 2. 【合成 20MB 完全体 DTBO】
           MKDTBOIMG="kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg"
           if [ -f "$MKDTBOIMG" ]; then
+            echo "正在将所有碎片喂给合成工具..."
             $MKDTBOIMG create dtbo.img dtbo_collection/*
-            echo "📊 合成 DTBO 完成，最终体积：$(du -h dtbo.img)"
+            echo "📊 合成完成，最终体积：$(du -h dtbo.img)"
           else
             echo "❌ 致命错误：未找到合成工具 mkdtboimg"
             exit 1
           fi
 
-          # 3. 【全路径搜刮驱动模块 .ko】
+          # 3. 【全路径搜刮所有 .ko 驱动】
           echo "正在全路径搜刮驱动模块..."
           find . -name "*.ko" -type f | while read -r file; do
-            # 驱动直接汇总，后到的覆盖旧的保证最新
+            # 驱动直接汇总，后到的覆盖旧的保证版本最新
             cp -f "$file" ko_collection/
           done
 
           # 4. 【捕获内核 Image】
+          # 优先从产物输出目录找
           IMAGE=$(find . -name "Image" -type f -path "*/dist/*" | head -1)
           [ -z "$IMAGE" ] && IMAGE=$(find . -name "Image" -type f | head -1)
           
           if [ -n "$IMAGE" ]; then
-            echo "✅ 成功捕获内核 Image: $IMAGE"
+            echo "✅ 成功捕获内核镜像: $IMAGE"
             cp -f "$IMAGE" Image_final
           else
-            echo "❌ 致命错误：未找到 Image 产物"
+            echo "❌ 致命错误：未找到内核 Image 产物"
             exit 1
           fi
 
-      - name: 下载 AnyKernel3 并完成最终封装
+      - name: 下载 AnyKernel3 并完成封装
         run: |
-          # 此时目录下只有原始代码和我们合成好的产物，环境纯净
+          # 环境依然纯净，开始下载模板
           git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
           
-          echo "正在注入产物到 AnyKernel3 模板..."
+          echo "正在将捕获的产物注入 AnyKernel3 模板..."
           cp -f Image_final AnyKernel3/Image
           cp -f dtbo.img AnyKernel3/dtbo.img
           
+          # 注入驱动模块
           mkdir -p AnyKernel3/modules/lib/modules/
           cp -af ko_collection/. AnyKernel3/modules/lib/modules/
 
@@ -128,10 +130,10 @@ jobs:
           zip -r9 ../S25u-SukiSU-Kernel-V1.zip ./*
           cd ..
           mv S25u-SukiSU-Kernel-V1.zip output/
-          echo "🎉 打包圆满成功！"
+          echo "🎉 S25u 全系列通用内核打包圆满成功！"
 
-      - name: 上传产物
-        uses: upload-artifact@v4
+      - name: 上传最终产物
+        uses: actions/upload-artifact@v4
         with:
           name: S25u-Custom-Kernel-Final
           path: output/
