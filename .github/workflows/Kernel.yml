@@ -24,16 +24,10 @@ jobs:
 
       - name: 开始编译并执行“偷梁换柱”
         run: |
-          export CL_SYNC="SukiSU"
-          export BUILD_NUMBER="Ultra"
-          export SEC_BUILD_OPTION_KNOX_CSB="n"
-          export SEC_PRODUCT_SHIP="n"
-          export SKIP_DEFCONFIG_VALIDATION=1
           chmod +x build_kernel_GKI.sh
 
           # 1. 后台启动编译脚本，使其进入配置生成阶段
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun &
-          BUILD_PID=$!
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
           # 2. 动态监控 Bazel 生成的最终 .config 真身
           echo "等待 Bazel 生成最终 .config 真身..."
