@@ -1,4 +1,4 @@
-name: 三星S25u_内核编译_SukiSU版
+cname: 三星S25u_内核编译_全量直出版
 
 on:
   push:
@@ -11,101 +11,74 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Bazel build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/bazel
-            out/
-          key: ${{ runner.os }}-bazel-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-bazel-
-
       - name: 环境依赖初始化
         run: |
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
-
-      - name: 格式规范化
-        run: find . -name "*.sh" -exec dos2unix {} + || true
+          find . -name "*.sh" -exec dos2unix {} + || true
 
       - name: 注入 KernelSU 源码
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 深度入侵核心编译脚本 (适配 kbuild_with_bazel.py)
+      - name: 彻底切断合并逻辑 (全量配置专用)
         run: |
           FILE_PV="kernel_platform/build/kernel/android/prepare_vendor.sh"
-          FILE_KBZ="kernel_platform/msm-kernel/build_with_bazel.py"
+          FILE_BZ="kernel_platform/msm-kernel/build_with_bazel.py"
           
-          # 1. 魔改 prepare_vendor.sh：把你的完整 S25.config 强行喂给所有可能的位置
+          # 1. 废掉 prepare_vendor.sh 里的所有合并动作
+          # 直接注释掉 brunch，不让它运行任何配置合并或生成逻辑
           sed -i 's/^.*\/brunch.*$/#&/' "$FILE_PV"
-          sed -i '/#.*\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}\n  mkdir -p "${OUT_DIR}"\n  cp -f ${ROOT_DIR}/S25.config "${OUT_DIR}/.config"\n  cp -f ${ROOT_DIR}/S25.config ${ROOT_DIR}/msm-kernel/arch/arm64/configs/vendor/sun_perf.config' "$FILE_PV"
           
-          # 2. 物理掉包官方配置，防止 Bazel 回溯官方定义
-          sed -i '/RECOMPILE_KERNEL.*==.*1/a \  cp -f ${ROOT_DIR}/S25.config ${ROOT_DIR}/msm-kernel/arch/arm64/configs/vendor/sun_perf.config' "$FILE_PV"
+          # 2. 强行把全量 S25.config 喂给编译器
+          # 这一步最关键：不管 Bazel 怎么跑，最终内核用的 .config 必须是我们的
+          sed -i '/#.*\/brunch/a \  mkdir -p "${TEMP_KP_OUT_DIR}"\n  cp -f ${ROOT_DIR}/S25.config "${TEMP_KP_OUT_DIR}/.config"' "$FILE_PV"
+          
+          # 3. 物理覆盖官方入口，防止 Bazel 找不到文件报错
+          cp -f kernel_platform/S25.config kernel_platform/msm-kernel/arch/arm64/configs/vendor/sun_perf.config
 
-          # 3. 入侵 kbuild_with_bazel.py (彻底禁用所有配置比对逻辑)
-          if [ -f "$FILE_KBZ" ]; then
-            # A. 强行屏蔽 check_diff 的逻辑，让它永远不发现文件变化
-            sed -i 's/return any(diff)/return False/g' "$FILE_KBZ" || true
-            
-            # B. 禁用 git checkout，防止你的 S25.config 在编译前或出错时被脚本撤销
-            sed -i 's/subprocess.Popen(\["git", "checkout"/subprocess.Popen(["true"/g' "$FILE_KBZ" || true
-            
-            # C. 屏蔽 clean_legacy_generated_files，防止它清理掉我们注入的配置
-            sed -i 's/self.clean_legacy_generated_files()/# self.clean_legacy_generated_files()/g' "$FILE_KBZ" || true
-
-            # D. 关键：直接在脚本内部注入 --notest_defconfig 参数给 Bazel
-            # 找到 user_opts 列表初始化的位置并强行插入
-            sed -i '/self.user_opts = user_opts/a \        self.user_opts.extend(["--notest_defconfig", "--kconfig_add_symbol_list=/dev/null"])' "$FILE_KBZ" || true
+          # 4. 致盲 build_with_bazel.py
+          if [ -f "$FILE_BZ" ]; then
+            # 让差异检测永远消失
+            sed -i 's/return any(diff)/return False/g' "$FILE_BZ"
+            # 禁用 git checkout 恢复现场，保护我们的 S25.config
+            sed -i 's/subprocess.Popen(\["git", "checkout"/subprocess.Popen(["true"/g' "$FILE_BZ"
+            # 禁用清理逻辑
+            sed -i 's/self.clean_legacy_generated_files()/# self.clean_legacy_generated_files()/g' "$FILE_BZ"
           fi
 
-          echo "✅ 针对 kbuild_with_bazel.py 的入侵完成"
-
-      - name: 开始 Bazel 构建
+      - name: 开始编译
         run: |
+          # 注入全量配置所需的环境变量，告知系统跳过所有校验
+          export SKIP_DEFCONFIG_VALIDATION=1
+          export KCONFIG_NOTEST=1
           export CL_SYNC="SukiSU"
           export BUILD_NUMBER="Ultra"
-          export SKIP_DEFCONFIG_VALIDATION=1
-          export SEC_BUILD_OPTION_KNOX_CSB="n"
-          export SEC_PRODUCT_SHIP="n"
-          
-          # 确认文件就在 kernel_platform 根目录
-          if [ ! -f kernel_platform/S25.config ]; then
-             echo "❌ 错误：在 kernel_platform/S25.config 找不到文件！"
-             ls -R kernel_platform/
-             exit 1
-          fi
           
           chmod +x build_kernel_GKI.sh
+          # 直接运行，此时脚本会直接跳过合并读取我们准备好的 .config
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 打包 AnyKernel3 刷机包
+      - name: 打包产物
         run: |
           mkdir -p output
-          [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
-
-          # 寻找 Image 产物
           IMAGE=$(find kernel_platform/out -name "Image" -type f 2>/dev/null | head -1)
           if [ -n "$IMAGE" ]; then
+            [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
             cp -v "$IMAGE" AnyKernel3/
             find kernel_platform/out -name "dtbo.img" -type f 2>/dev/null -exec cp {} AnyKernel3/ \;
             mkdir -p AnyKernel3/modules/lib/modules/
             find kernel_platform/out -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
             
-            cd AnyKernel3
-            zip -r9 ../S25u-SukiSU-Custom.zip ./*
-            cd ..
-            mv S25u-SukiSU-Custom.zip output/
-            echo "✅ 刷机包打包成功"
+            cd AnyKernel3 && zip -r9 ../S25u-SukiSU-Kernel.zip ./* && cd ..
+            mv S25u-SukiSU-Kernel.zip output/
           else
-            echo "❌ 错误：未找到 Image，请检查编译日志中的 build_with_bazel.py 错误"
+            echo "❌ 编译失败，未生成 Image"
             exit 1
           fi
 
-      - name: 上传构建产物
+      - name: 上传
         if: always()
         uses: actions/upload-artifact@v4
         with:
