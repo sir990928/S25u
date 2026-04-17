@@ -1,5 +1,4 @@
-
- name: 三星S25u_内核编译_SukiSU版
+name: 三星S25u_内核编译_SukiSU版
 
 on:
   push:
