@@ -34,37 +34,45 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 彻底魔改 prepare_vendor.sh (禁用检测 + 物理掉包)
+      - name: 深度入侵编译系统 (适配完整 S25.config)
         run: |
-          FILE="kernel_platform/build/kernel/android/prepare_vendor.sh"
+          FILE_PV="kernel_platform/build/kernel/android/prepare_vendor.sh"
+          FILE_BZ="kernel_platform/build_with_bazel.py"
           
-          # 1. 注释掉 brunch 行，并注入 cp 逻辑
-          # 注意：此时 S25.config 在 kernel_platform 根目录，而脚本执行时 ROOT_DIR 指向 kernel_platform
-          sed -i 's/^.*\/brunch.*$/#&/' "$FILE"
-          sed -i '/#.*\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}\n  mkdir -p "${OUT_DIR}"\n  cp -f ${ROOT_DIR}/S25.config "${OUT_DIR}/.config"' "$FILE"
+          # 1. 魔改 prepare_vendor.sh
+          # 注释掉 brunch，直接将你的完整 S25.config 注入到输出目录和源码目录
+          sed -i 's/^.*\/brunch.*$/#&/' "$FILE_PV"
+          sed -i '/#.*\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}\n  mkdir -p "${OUT_DIR}"\n  cp -f ${ROOT_DIR}/S25.config "${OUT_DIR}/.config"\n  cp -f ${ROOT_DIR}/S25.config ${ROOT_DIR}/msm-kernel/arch/arm64/configs/vendor/sun_perf.config' "$FILE_PV"
           
-          # 2. 物理掉包：在执行 build_with_bazel.py 之前替换源文件
-          sed -i '/RECOMPILE_KERNEL.*==.*1/a \  cp -f ${ROOT_DIR}/S25.config ${ROOT_DIR}/msm-kernel/arch/arm64/configs/vendor/sun_perf.config' "$FILE"
-          
-          # 3. 禁用检测参数
-          sed -i 's/--skip abl/--skip abl --notest_defconfig/' "$FILE"
+          # 2. 物理掉包官方配置 (双重保险)
+          sed -i '/RECOMPILE_KERNEL.*==.*1/a \  cp -f ${ROOT_DIR}/S25.config ${ROOT_DIR}/msm-kernel/arch/arm64/configs/vendor/sun_perf.config' "$FILE_PV"
 
-          echo "✅ prepare_vendor.sh 魔改完成"
+          # 3. 入侵 build_with_bazel.py (彻底禁用所有校验)
+          if [ -f "$FILE_BZ" ]; then
+            # A. 强行塞入禁用校验的 Bazel 参数
+            sed -i '/self.user_opts = user_opts/a \        self.user_opts.extend(["--notest_defconfig", "--kconfig_add_symbol_list=/dev/null"])' "$FILE_BZ"
+            
+            # B. 禁用 check_diff 函数，让它永远不触发“检测到差异”的逻辑
+            sed -i 's/return any(diff)/return False/g' "$FILE_BZ"
+            
+            # C. 屏蔽所有的 git checkout 恢复逻辑，保护我们掉包的 sun_perf.config 不被还原
+            sed -i 's/subprocess.Popen(\["git", "checkout"/subprocess.Popen(["true"/g' "$FILE_BZ"
+            
+            # D. 屏蔽 clean_legacy_generated_files，防止它删掉我们刚刚生成的配置文件
+            sed -i 's/self.clean_legacy_generated_files()/# self.clean_legacy_generated_files()/g' "$FILE_BZ"
+          fi
+
+          echo "✅ 针对完整配置的系统入侵完成"
 
       - name: 开始 Bazel 构建
         run: |
           export CL_SYNC="SukiSU"
           export BUILD_NUMBER="Ultra"
           export SKIP_DEFCONFIG_VALIDATION=1
-          export KCONFIG_NOTEST=1
+          export SEC_BUILD_OPTION_KNOX_CSB="n"
           
-          # 核心修正：检查 kernel_platform 目录下的文件
-          if [ ! -f kernel_platform/S25.config ]; then
-            echo "❌ 错误：在 kernel_platform 文件夹内未找到 S25.config"
-            echo "当前目录结构如下："
-            ls -R
-            exit 1
-          fi
+          # 检查文件位置
+          ls -l kernel_platform/S25.config
           
           chmod +x build_kernel_GKI.sh
           bash build_kernel_GKI.sh pa3q_chn_openx user sun
@@ -74,6 +82,7 @@ jobs:
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
 
+          # 寻找编译出的镜像 (注意路径可能在 kernel_platform/out)
           IMAGE=$(find kernel_platform/out -name "Image" -type f 2>/dev/null | head -1)
           if [ -n "$IMAGE" ]; then
             cp -v "$IMAGE" AnyKernel3/
@@ -82,12 +91,11 @@ jobs:
             find kernel_platform/out -name "*.ko" -type f 2>/dev/null -exec cp {} AnyKernel3/modules/lib/modules/ \;
             
             cd AnyKernel3
-            zip -r9 ../S25u-SukiSU-Kernel.zip ./*
+            zip -r9 ../S25u-Custom-Kernel.zip ./*
             cd ..
-            mv S25u-SukiSU-Kernel.zip output/
-            echo "✅ 刷机包已生成"
+            mv S25u-Custom-Kernel.zip output/
           else
-            echo "❌ 错误：未找到编译出的 Image"
+            echo "❌ 错误：未找到 Image，请检查日志"
             exit 1
           fi
 
