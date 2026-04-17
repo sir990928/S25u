@@ -19,19 +19,10 @@ jobs:
       - name: 注入 KernelSU
         run: |
           cd kernel_platform/common
+          # 接入 Neko 版 KernelSU 脚本
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 偷梁换柱 - 强行注入 S25.config
-        run: |
-          # 我们不再依赖 vendor 脚本的流程，直接把你的 config 塞进它最终读取的位置
-          # 这样即便它后面跑什么 prepare_vendor，读取的也是我们准备好的真身
-          mkdir -p out/msm-sun-sun-perf
-          cp -f kernel_platform/S25.config out/msm-sun-sun-perf/.config
-          # 顺便给 kernel_platform 下也备份一份，防止它从不同路径读取
-          mkdir -p kernel_platform/out/msm-sun-sun-perf
-          cp -f kernel_platform/S25.config kernel_platform/out/msm-sun-sun-perf/.config
-
-      - name: 开始编译
+      - name: 开始编译并执行“偷梁换柱”
         run: |
           export CL_SYNC="SukiSU"
           export BUILD_NUMBER="Ultra"
@@ -39,56 +30,84 @@ jobs:
           export SEC_PRODUCT_SHIP="n"
           export SKIP_DEFCONFIG_VALIDATION=1
           chmod +x build_kernel_GKI.sh
-          # 直接运行主编译脚本，忽略它的 vendor 校验
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 根目录全量扫荡与暴力打包
+          # 1. 后台启动编译脚本，使其进入配置生成阶段
+          bash build_kernel_GKI.sh pa3q_chn_openx user sun &
+          BUILD_PID=$!
+
+          # 2. 动态监控 Bazel 生成的最终 .config 真身
+          echo "等待 Bazel 生成最终 .config 真身..."
+          while true; do
+            # 锁定你提供的那个深层临时路径
+            REAL_CONFIG=$(find kernel_platform/bazel-out -name ".config" | grep "kernel_aarch64_config/out_dir/.config" | head -1)
+            
+            if [ -n "$REAL_CONFIG" ] && [ -f "$REAL_CONFIG" ]; then
+              echo "检测到真身已生成: $REAL_CONFIG"
+              echo "执行偷梁换柱：正在用你的完整 S25.config 强制覆盖..."
+              cp -f kernel_platform/S25.config "$REAL_CONFIG"
+              echo "覆盖成功！内核将按照此完整配置进行编译。"
+              break
+            fi
+
+            # 如果编译进程提前结束了，说明出错了
+            if ! kill -0 $BUILD_PID 2>/dev/null; then
+              echo "编译进程已停止，注入失败，请检查前置错误。"
+              exit 1
+            fi
+            sleep 3
+          done
+
+          # 3. 回到前台等待内核编译圆满完成
+          wait $BUILD_PID
+
+      - name: 根目录全路径搜刮与暴力打包
         run: |
           mkdir -p output
-          # 1. 准备 AnyKernel3 环境
+          # 1. 准备 AnyKernel3 模板和临时汇总仓
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
-          
-          # 创建临时汇总仓
           mkdir -p dtbo_collection
           mkdir -p ko_collection
 
-          # 2. 【从根目录开始扫荡所有 .dtbo】
-          # 不管它在 kernel_platform/out 还是根目录 out，全部抓过来
+          # 2. 【搜刮 DTBO 碎片】
+          # 从根目录开始执行全路径扫荡，找回消失的 15MB 硬件配置
           echo "正在全路径搜刮 .dtbo 碎片..."
           find . -name "*.dtbo" -type f -not -path "./AnyKernel3/*" -exec cp -f {} dtbo_collection/ \;
 
-          # 3. 【手动合成 20MB 完全体 DTBO】
-          # 使用你定位到的绝对路径工具
+          # 3. 【合成 20MB 完全体 DTBO】
+          # 调用指定的专用工具，将所有搜刮到的碎片压制成一个 dtbo.img
           MKDTBOIMG="kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg"
           if [ -f "$MKDTBOIMG" ]; then
-            echo "开始合成全量设备树..."
+            echo "开始合成完全体设备树镜像..."
             $MKDTBOIMG create AnyKernel3/dtbo.img dtbo_collection/*.dtbo
-            echo "合成完成，最终体积：$(du -h AnyKernel3/dtbo.img)"
+            echo "合成完成，体积：$(du -h AnyKernel3/dtbo.img)"
           else
-            echo "错误：未找到合成工具，尝试抓取体积最大的成品..."
+            echo "警告：未找到合成工具，执行最大体积兜底策略..."
             find . -name "dtbo.img" -type f -not -path "./AnyKernel3/*" -exec ls -l {} + | sort -nk 5 | tail -1 | awk '{print $NF}' | xargs -I{} cp -f {} AnyKernel3/dtbo.img
           fi
 
-          # 4. 【从根目录开始扫荡所有 .ko】
-          echo "正在全路径搜刮内核驱动..."
+          # 4. 【搜刮 KO 驱动】
+          # 从根目录搜刮所有驱动模块，确保 WiFi/蓝牙等硬件驱动版本对齐
+          echo "正在全路径搜刮 .ko 驱动..."
           find . -name "*.ko" -type f -not -path "./AnyKernel3/*" -exec cp -f {} ko_collection/ \;
           mkdir -p AnyKernel3/modules/lib/modules/
           cp -af ko_collection/. AnyKernel3/modules/lib/modules/
 
           # 5. 【获取核心内核 Image】
-          # 同样从根目录扫荡，优先取带 dist 路径的
+          # 从根目录扫荡 Image，优先获取 dist 目录下的最终产物
           IMAGE=$(find . -name "Image" -type f -path "*/dist/*" | head -1)
           [ -z "$IMAGE" ] && IMAGE=$(find . -name "Image" -type f | head -1)
           
           if [ -n "$IMAGE" ]; then
+            echo "正在打包内核镜像: $IMAGE"
             cp -f "$IMAGE" AnyKernel3/Image
-            # 6. 【打包成品】
+            # 6. 【最终封装】
             cd AnyKernel3
-            zip -r9 ../S25u-SukiSU-Kernel.zip ./*
+            zip -r9 ../S25u-SukiSU-Kernel-V1.zip ./*
             cd ..
-            mv S25u-SukiSU-Kernel.zip output/
+            mv S25u-SukiSU-Kernel-V1.zip output/
+            echo "🎉 打包圆满成功！"
           else
-            echo "致命错误：没找到 Image，编译可能失败了！"
+            echo "❌ 致命错误：未找到内核 Image 产物！"
             exit 1
           fi
 
