@@ -38,8 +38,9 @@ jobs:
         run: |
           FILE="kernel_platform/build/kernel/android/prepare_vendor.sh"
           sed -i 's!^.*build/brunch.*$!# &!' "$FILE"
-          sed -i '/#.*build\/brunch/a \  mkdir -p "${ROOT_DIR}/out/msm-kernel-sun-perf"' "$FILE"
-          sed -i '/#.*build\/brunch/a \  cp -f "${ROOT_DIR}/S25.config" "${ROOT_DIR}/out/msm-kernel-sun-perf/.config"' "$FILE"
+          sed -i '/#.*build\/brunch/a \  OUT_DIR=${TEMP_KP_OUT_DIR}' "$FILE"
+          sed -i '/#.*build\/brunch/a \  mkdir -p "${OUT_DIR}"' "$FILE"
+          sed -i '/#.*build\/brunch/a \  cp -f S25.config "${OUT_DIR}/.config"' "$FILE"
 
       - name: 开始 Bazel 构建
         run: |
