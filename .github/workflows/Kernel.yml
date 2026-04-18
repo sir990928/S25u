@@ -1,4 +1,4 @@
-name: "S25Ultra-GKI内核定点持续劫持"
+name: "S25Ultra-GKI内核深度路径劫持"
 
 on:
   push:
@@ -18,41 +18,59 @@ jobs:
           sudo apt update
           sudo apt install -y inotify-tools dos2unix
 
-      - name: 准备劫持引擎 (无限复活版)
+      - name: 准备劫持引擎 (深度路径特调版)
         run: |
+          # 校验源文件
           SOURCE_PATH="kernel_platform/S25.config"
           if [ ! -f "$SOURCE_PATH" ]; then
             echo "❌ 错误: 找不到 $SOURCE_PATH" && exit 1
           fi
           dos2unix "$SOURCE_PATH"
           
-          # 预创建入口目录
+          # 预建目录防止监听器启动时路径不存在
           mkdir -p kernel_platform/bazel-cache
 
           cat > hijack_engine.sh <<'EOF'
           #!/bin/bash
           SOURCE_CONFIG="kernel_platform/S25.config"
-          # 精确路径特征
+          
+          # 锁定你提供的核心路径特征：跳过随机哈希，锁定稳定结构
           TARGET_PATTERN="execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
 
-          echo "🕵️ [$(date +%T)] 持续监控模式已开启，死守 bazel-cache..."
+          echo "🕵️ [$(date +%T)] 劫持器已启动，目标锁定：$TARGET_PATTERN"
 
-          # -m 参数保证了监控是持续的，不会在捕获一次后退出
-          # --exclude 过滤掉短命沙盒，防止 Unknown error -1
+          # 1. 暴力扫描轮询（每 1 秒扫一次，防止沙盒重建摆我们一道）
+          (
+            while true; do
+              # 搜索符合路径特征的最终配置文件
+              FOUND=$(find kernel_platform/bazel-cache -name ".config" 2>/dev/null | grep "$TARGET_PATTERN" | head -n 1)
+              if [ ! -z "$FOUND" ]; then
+                cp -f "$SOURCE_CONFIG" "$FOUND"
+                # 静默执行，确保不影响主日志流
+              fi
+              sleep 1
+            done
+          ) &
+
+          # 2. 实时内核事件监听
+          # 增加 exclude 屏蔽 sandbox 和 stash 目录，彻底解决 Unknown error -1
           inotifywait -m -r -e close_write \
             --exclude "sandbox|sandbox_stash" \
             --format '%w%f' kernel_platform/bazel-cache | while read NEW_FILE
           do
+              # 匹配精准路径结尾
               if [[ "$NEW_FILE" == *"$TARGET_PATTERN" ]]; then
-                  # 核心动作：强制物理替换
+                  # 核心动作：瞬间执行物理覆盖
                   cp -f "$SOURCE_CONFIG" "$NEW_FILE"
                   
                   echo "🔥 [$(date +%T)] 拦截并替换成功！"
-                  echo "📍 路径: $NEW_FILE"
+                  echo "📍 完整路径: $NEW_FILE"
                   
-                  # 每次替换后都打印一下验证，如果你在日志里看到多次这个输出，
-                  # 就说明 Bazel 确实重写过，但被我们按住了。
-                  grep "CONFIG_LOCALVERSION" "$NEW_FILE"
+                  # 打印验证，如果你在日志看到多次，说明它删了重写过，但被我们按住了
+                  if grep -q "CONFIG_LOCALVERSION" "$NEW_FILE"; then
+                      echo "✅ 注入验证成功，LOCALVERSION 内容："
+                      grep "CONFIG_LOCALVERSION" "$NEW_FILE"
+                  fi
               fi
           done
           EOF
@@ -65,37 +83,51 @@ jobs:
 
       - name: 执行劫持并启动编译
         run: |
-          # 1. 后台运行劫持进程，并调高它的优先级 (nice -n -20)
-          # 确保脚本在 CPU 繁忙时也能第一时间抢占系统资源完成 cp
+          # 1. 以后台最高优先级启动劫持进程 (nice -n -20)
           sudo nice -n -20 ./hijack_engine.sh &
           HIJACK_PID=$!
           
-          # 2. 开始编译
+          # 2. 执行正式编译脚本
           chmod +x build_kernel_GKI.sh
+          # 强制跳过配置匹配检查
           export SKIP_DEFCONFIG_MATCH=1
           export SKIP_IF_SAVEDEFCONFIG_DOES_NOT_MATCH=1
           
           ./build_kernel_GKI.sh pa3q_chn_openx user sun
           
-          # 3. 结束后杀掉进程
+          # 3. 编译结束杀掉劫持进程
           kill $HIJACK_PID || true
 
       - name: 打包 AnyKernel3
         run: |
           mkdir -p output
           git clone --depth=1 https://github.com/topjohnwu/AnyKernel3.git
+          
+          # 搜集编译好的内核文件
           find kernel_platform/out -name Image -exec cp {} AnyKernel3/ \;
           find kernel_platform/out -name "*.dtbo" -exec cp {} AnyKernel3/ \;
+          
+          # 收集并拷贝内核模块
           mkdir -p AnyKernel3/modules/lib/modules/
           find kernel_platform/out -name "*.ko" -exec cp {} AnyKernel3/modules/lib/modules/ \;
+          
           cd AnyKernel3
           zip -r9 ../S25Ultra_SukiSU_Kernel.zip ./*
           cd ..
           mv S25Ultra_SukiSU_Kernel.zip output/
 
-      - name: 上传产物
+      - name: 上传内核
         uses: actions/upload-artifact@v4
         with:
           name: S25Ultra-SukiSU-Kernel
           path: output/S25Ultra_SukiSU_Kernel.zip
+
+      - name: 清理运行历史
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run list --workflow "Kernel.yml" --json databaseId,status \
+            --jq '.[] | select(.status=="failure" or .status=="cancelled") | .databaseId' | xargs -I {} gh run delete {}
+        continue-on-error: true
 
