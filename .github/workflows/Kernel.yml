@@ -32,32 +32,38 @@ jobs:
           #!/bin/bash
           SOURCE_CONFIG="kernel_platform/common/S25.config"
           TARGET_PATH="execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
-          DB=/tmp/.hijack_ts_db
-          touch $DB
+          TIME_DB=/tmp/.hijack_time_db
+          touch "$TIME_DB"
 
           echo "🕵️ [$(date +%T)] 劫持引擎启动"
           echo "📍 监控路径: $TARGET_PATH"
-          echo "⏱️  逻辑：文件被重新生成则再次替换"
+          echo "⏱️  逻辑：文件时间更新 => 重新替换"
 
           while true; do
-            find kernel_platform/bazel-cache -type f -name ".config" 2>/dev/null | while read file; do
+            find kernel_platform/bazel-cache -type f -name ".config" 2>/dev/null | while read -r file; do
               if [[ "$file" == *"$TARGET_PATH" ]]; then
 
+                # 获取文件当前时间戳
                 ts=$(stat -c "%Y" "$file" 2>/dev/null)
-                if [ -z "$ts" ]; then
-                  continue
-                fi
+                [ -z "$ts" ] && continue
 
-                old_ts=$(awk -v f="$file" '$1 == f {print $2}' $DB)
+                # 获取我们上次替换后记录的时间（不存在则为0）
+                old_ts=$(grep "^$file " "$TIME_DB" 2>/dev/null | awk '{print $2}')
                 old_ts=${old_ts:-0}
 
+                # 文件时间 > 我们记录的时间 => 重新替换
                 if [ "$ts" -gt "$old_ts" ]; then
                   cp -f "$SOURCE_CONFIG" "$file"
+                  # 拿到替换后的新时间戳
                   new_ts=$(stat -c "%Y" "$file" 2>/dev/null)
-                  awk -v f="$file" -v ts="$new_ts" '$1 != f' $DB > $DB.tmp
-                  echo "$f $ts" >> $DB.tmp
-                  mv -f $DB.tmp $DB
-                  echo "✅ [$(date +%T)] 替换完成: $file"
+                  [ -z "$new_ts" ] && new_ts="$ts"
+
+                  # 更新数据库
+                  grep -v "^$file " "$TIME_DB" > "$TIME_DB.tmp" 2>/dev/null || true
+                  echo "$file $new_ts" >> "$TIME_DB.tmp"
+                  mv -f "$TIME_DB.tmp" "$TIME_DB"
+
+                  echo "✅ [$(date +%T)] 已替换: $file"
                 fi
               fi
             done
