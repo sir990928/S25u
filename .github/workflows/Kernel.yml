@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@4
 
       - name: 环境依赖
         run: |
@@ -19,91 +19,98 @@ jobs:
       - name: 注入 KernelSU
         run: |
           cd kernel_platform/common
-          # 接入 Neko 版 KernelSU 脚本
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 开始编译并执行“偷梁换柱”
+      - name: 启动编译并后台替换.config
         run: |
           chmod +x build_kernel_GKI.sh
-
-          # 后台启动编译，拿到 PID
           ./build_kernel_GKI.sh pa3q_chn_openx user sun &
           BUILD_PID=$!
 
-          echo "编译已后台启动，PID: $BUILD_PID"
-          echo "等待 Bazel 生成 .config 并立即替换..."
+          echo "编译 PID: $BUILD_PID"
+          echo "正在等待内核生成 .config 并强制替换..."
 
-          # 精确匹配真实沙盒路径：两处*对应随机哈希+随机数字
+          # 自己的配置
+          MY_CONFIG="$GITHUB_WORKSPACE/kernel_platform/S25.config"
+
+          # 循环：找到真正被内核使用的 .config
           while true; do
-            TARGET_CONFIG=$(find kernel_platform/bazel-cache \
-              -path "*/sandbox/linux-sandbox/*/execroot/_main/out/android15-6.6/msm-kernel/.config" \
-              -type f 2>/dev/null | head -1)
+            # 找出所有在沙盒里、且属于本次编译的 .config
+            CONFIG_FILES=$(find kernel_platform/bazel-cache \
+              -path "*/sandbox/linux-sandbox/*/out/android15-6.6/msm-kernel/.config" \
+              -type f 2>/dev/null)
 
-            if [ -n "$TARGET_CONFIG" ] && [ -f "$TARGET_CONFIG" ]; then
-              echo "⚡ 检测到真实 .config 已生成，立即覆盖"
-              cp -f kernel_platform/S25.config "$TARGET_CONFIG"
-              echo "✅ 替换成功，内核将使用你的配置编译"
-              break
-            fi
+            for cfg in $CONFIG_FILES; do
+              # 已经替换过就跳过
+              if grep -q "MY_CUSTOM_CONFIG_REPLACED" "$cfg"; then
+                continue
+              fi
 
-            # 进程提前退出则失败
+              echo "========================================================"
+              echo "🔎 发现内核编译使用的 .config"
+              echo "📂 路径: $cfg"
+              echo "========================================================"
+
+              # 强制替换
+              cp -f "$MY_CONFIG" "$cfg"
+              echo "# MY_CUSTOM_CONFIG_REPLACED" >> "$cfg"
+
+              echo "✅ 已替换为你的自定义配置"
+              break 2
+            done
+
+            # 编译崩了就退出
             if ! kill -0 $BUILD_PID 2>/dev/null; then
-              echo "❌ 编译进程已停止，注入失败"
+              echo "❌ 编译进程已退出"
               exit 1
             fi
 
-            sleep 0.2
+            sleep 0.3
           done
 
-          # 等待编译完成
+          # 等编译结束
           wait $BUILD_PID
 
-      - name: 根目录全路径搜刮与暴力打包
+      - name: 搜刮镜像并打包
         run: |
           mkdir -p output
-          # 1. 准备 AnyKernel3 模板和临时汇总仓
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
-          mkdir -p dtbo_collection
-          mkdir -p ko_collection
-          # 2. 【搜刮 DTBO 碎片】
-          echo "正在全路径搜刮 .dtbo 碎片..."
-          find . -name "*.dtbo" -type f -not -path "./AnyKernel3/*" -exec cp -f {} dtbo_collection/ \;
-          # 3. 【合成完全体 DTBO】
+
+          mkdir -p dtbo_collection ko_collection
+
+          # 拿 dtbo
+          find . -name "*.dtbo" -type f -not -path "./AnyKernel3/*" -exec cp {} dtbo_collection/ \;
           MKDTBOIMG="kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg"
-          if [ -f "$MKDTBOIMG" ]; then
-            echo "开始合成完全体设备树镜像..."
+
+          if [ -x "$MKDTBOIMG" ]; then
             $MKDTBOIMG create AnyKernel3/dtbo.img dtbo_collection/*.dtbo
-            echo "合成完成，体积：$(du -h AnyKernel3/dtbo.img)"
           else
-            echo "警告：未找到合成工具，执行最大体积兜底策略..."
-            find . -name "dtbo.img" -type f -not -path "./AnyKernel3/*" -exec ls -l {} + | sort -nk 5 | tail -1 | awk '{print $NF}' | xargs -I{} cp -f {} AnyKernel3/dtbo.img
+            LARGE_DTBO=$(find . -name dtbo.img -type f -not -path "./AnyKernel3/*" | xargs ls -l | sort -nk 5 | tail -1 | awk '{print $NF}')
+            cp -f "$LARGE_DTBO" AnyKernel3/dtbo.img
           fi
-          # 4. 【搜刮 KO 驱动】
-          echo "正在全路径搜刮 .ko 驱动..."
-          find . -name "*.ko" -type f -not -path "./AnyKernel3/*" -exec cp -f {} ko_collection/ \;
+
+          # 拿 ko
+          find . -name "*.ko" -type f -not -path "./AnyKernel3/*" -exec cp {} ko_collection/ \;
           mkdir -p AnyKernel3/modules/lib/modules/
           cp -af ko_collection/. AnyKernel3/modules/lib/modules/
-          # 5. 【获取核心内核 Image】
-          IMAGE=$(find . -name "Image" -type f -path "*/dist/*" | head -1)
-          [ -z "$IMAGE" ] && IMAGE=$(find . -name "Image" -type f | head -1)
-          
-          if [ -n "$IMAGE" ]; then
-            echo "正在打包内核镜像: $IMAGE"
-            cp -f "$IMAGE" AnyKernel3/Image
-            # 6. 【最终封装】
-            cd AnyKernel3
-            zip -r9 ../S25u-SukiSU-Kernel-V1.zip ./*
-            cd ..
-            mv S25u-SukiSU-Kernel-V1.zip output/
-            echo "🎉 打包圆满成功！"
-          else
-            echo "❌ 致命错误：未找到内核 Image 产物！"
+
+          # 拿 Image
+          IMAGE=$(find . -name Image -type f -path "*/dist/*" | head -1)
+          [ -z "$IMAGE" ] && IMAGE=$(find . -name Image -type f | head -1)
+
+          if [ -z "$IMAGE" ]; then
+            echo "❌ 找不到内核镜像"
             exit 1
           fi
 
-      - name: 上传产物
-        uses: actions/upload-artifact@v4
+          cp -f "$IMAGE" AnyKernel3/Image
+          cd AnyKernel3
+          zip -r9 ../S25u-SukiSU-Kernel.zip ./*
+          cd ..
+          mv *.zip output/
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: S25u-Custom-Kernel-Final
+          name: S25u-Custom-Kernel
           path: output/
 
