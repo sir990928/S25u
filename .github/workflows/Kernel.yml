@@ -5,7 +5,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    steps>
+    steps:
       - uses: actions/checkout@v4
 
       - name: 安装依赖
@@ -13,26 +13,21 @@ jobs:
           sudo apt update
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
-      # 先集成KernelSU
       - name: 集成KernelSU
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      # 👇 编译开始前，先替换掉GKI默认配置
-      - name: 替换GKI内核配置文件
+      - name: 替换GKI配置为S25U
         run: |
-          cp -fv kernel_platform/S25.config \
-                 kernel_platform/common/arch/arm64/configs/gki_defconfig
+          cp -fv kernel_platform/S25.config kernel_platform/common/arch/arm64/configs/gki_defconfig
 
-      # 之后才开始编译
-      - name: 执行编译
+      - name: 开始编译
         run: |
           chmod +x build_kernel_GKI.sh
           ./build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      # 打包
-      - name: 打包AnyKernel3
+      - name: 打包内核
         run: |
           mkdir -p output
           git clone --depth=1 https://github.com/topjohnwu/AnyKernel3.git
