@@ -1,4 +1,4 @@
-name: "S25Ultra-GKI内核深度路径劫持"
+name: "S25Ultra-GKI提取原生config"
 
 on:
   push:
@@ -13,107 +13,50 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 安装劫持工具
+      - name: 安装依赖工具
         run: |
           sudo apt update
           sudo apt install -y inotify-tools dos2unix
-
-      - name: 准备劫持引擎
-        run: |
-          SOURCE_PATH="kernel_platform/common/S25.config"
-          if [ ! -f "$SOURCE_PATH" ]; then
-            echo "❌ 错误: 找不到 $SOURCE_PATH" && exit 1
-          fi
-          dos2unix "$SOURCE_PATH"
-
-          mkdir -p kernel_platform/bazel-cache
-
-          cat > hijack_engine.sh <<'EOF'
-          #!/bin/bash
-          SOURCE_CONFIG="kernel_platform/common/S25.config"
-          TARGET_PATH="execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
-          TIME_DB=/tmp/.hijack_time_db
-          touch "$TIME_DB"
-
-          echo "🕵️ [$(date +%T)] 劫持引擎启动"
-          echo "📍 监控路径: $TARGET_PATH"
-          echo "⏱️  逻辑：文件时间更新 => 重新替换"
-
-          while true; do
-            find kernel_platform/bazel-cache -type f -name ".config" 2>/dev/null | while read -r file; do
-              if [[ "$file" == *"$TARGET_PATH" ]]; then
-
-                # 获取文件当前时间戳
-                ts=$(stat -c "%Y" "$file" 2>/dev/null)
-                [ -z "$ts" ] && continue
-
-                # 获取我们上次替换后记录的时间（不存在则为0）
-                old_ts=$(grep "^$file " "$TIME_DB" 2>/dev/null | awk '{print $2}')
-                old_ts=${old_ts:-0}
-
-                # 文件时间 > 我们记录的时间 => 重新替换
-                if [ "$ts" -gt "$old_ts" ]; then
-                  cp -f "$SOURCE_CONFIG" "$file"
-                  # 拿到替换后的新时间戳
-                  new_ts=$(stat -c "%Y" "$file" 2>/dev/null)
-                  [ -z "$new_ts" ] && new_ts="$ts"
-
-                  # 更新数据库
-                  grep -v "^$file " "$TIME_DB" > "$TIME_DB.tmp" 2>/dev/null || true
-                  echo "$file $new_ts" >> "$TIME_DB.tmp"
-                  mv -f "$TIME_DB.tmp" "$TIME_DB"
-
-                  echo "✅ [$(date +%T)] 已替换: $file"
-                fi
-              fi
-            done
-            sleep 0.7
-          done
-          EOF
-          chmod +x hijack_engine.sh
 
       - name: 集成 KernelSU
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 执行劫持并编译
+      - name: 启动编译并等待config生成
         run: |
-          sudo nice -n -20 ./hijack_engine.sh &
-          HIJACK_PID=$!
-
           chmod +x build_kernel_GKI.sh
-          yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
+          
+          # 后台跑编译，让它走到生成.config阶段
+          yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun &
+          BUILD_PID=$!
 
-          kill $HIJACK_PID || true
+          echo "⏳ 等待 Bazel 生成 .config 文件..."
+          sleep 180  # 根据你之前速度，留3分钟足够生成config
 
-      - name: 打包输出
+          # ========== 关键：提取两个原生 .config ==========
+          mkdir -p extracted_configs
+
+          find kernel_platform/bazel-cache -path "*msm-kernel/sun_perf_config/out_dir/.config" -type f | head -1 \
+            | xargs -I {} cp -v {} extracted_configs/sun_perf_dot_config
+
+          find kernel_platform/bazel-cache -path "*common/kernel_aarch64_config/out_dir/.config" -type f | head -1 \
+            | xargs -I {} cp -v {} extracted_configs/kernel_aarch64_dot_config
+
+          ls -la extracted_configs/
+
+          # ========== 杀掉编译进程，不再继续往下编 ==========
+          kill $BUILD_PID || true
+          echo "🛑 已停止编译，只保留原生 .config"
+
+      - name: 打包提取的config
         run: |
           mkdir -p output
-          git clone --depth=1 https://github.com/topjohnwu/AnyKernel3.git
+          zip -r9 output/Extracted-Native-Configs.zip extracted_configs/*
 
-          find . -name "Image" -type f | head -n 1 | xargs -I {} cp {} AnyKernel3/
-
-          cd AnyKernel3
-          cp -r ../out .
-          cp -r ../drivers .
-
-          zip -r9 ../S25Ultra_SukiSU_Kernel.zip ./*
-          cd ..
-          mv S25Ultra_SukiSU_Kernel.zip output/
-
-      - name: 上传内核
+      - name: 上传原生config文件
         uses: actions/upload-artifact@v4
         with:
-          name: S25Ultra-SukiSU-Kernel
-          path: output/S25Ultra_SukiSU_Kernel.zip
-
-      - name: 清理运行历史
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh run list --workflow "Kernel.yml" --json databaseId,status \
-            --jq '.[] | select(.status=="failure" or .status=="cancelled") | .databaseId' | xargs -I {} gh run delete {}
-        continue-on-error: true
+          name: Extracted-Native-Configs
+          path: output/Extracted-Native-Configs.zip
 
