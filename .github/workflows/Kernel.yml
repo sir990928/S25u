@@ -1,4 +1,5 @@
-name: S25Ultra-GKI内核编译
+name: "S25Ultra-GKI内核编译"
+
 on:
   workflow_dispatch:
 
@@ -6,20 +7,28 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-      - name: 安装依赖
+      - name: 安装构建依赖
         run: |
           sudo apt update
-          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
+          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole dwarves
 
-      - name: 集成KernelSU
+      - name: 集成 KernelSU
         run: |
-          cd kernel_platform/common
-          curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
+          # 确保目录存在，如果你的仓库结构不同，请修改路径
+          if [ -d "kernel_platform/common" ]; then
+            cd kernel_platform/common
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s gki
+          else
+            echo "错误: 未找到 kernel_platform/common 目录"
+            exit 1
+          fi
 
-      - name: 替换GKI配置为S25U
+      - name: 替换 GKI 配置为 S25U
         run: |
+          # 请确保仓库根目录下确实有 S25.config
           cp -fv kernel_platform/S25.config kernel_platform/common/arch/arm64/configs/gki_defconfig
 
       - name: 开始编译
@@ -27,21 +36,27 @@ jobs:
           chmod +x build_kernel_GKI.sh
           ./build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 打包AnyKernel3
+      - name: 打包 AnyKernel3
         run: |
           mkdir -p output
           git clone --depth=1 https://github.com/topjohnwu/AnyKernel3.git
-          find kernel_platform/out -name Image | head -1 | xargs -I {} cp {} AnyKernel3/
-          find kernel_platform/out -name *.dtbo | head -1 | xargs -I {} cp {} AnyKernel3/
-          find kernel_platform/out -name *.ko -exec cp {} AnyKernel3/modules/lib/modules/ \;
+          
+          # 查找并拷贝内核镜像
+          find kernel_platform/out -name Image -exec cp {} AnyKernel3/ \;
+          find kernel_platform/out -name "*.dtbo" -exec cp {} AnyKernel3/ \;
+          
+          # 关键修正：必须先创建模块存放目录
+          mkdir -p AnyKernel3/modules/lib/modules/
+          find kernel_platform/out -name "*.ko" -exec cp {} AnyKernel3/modules/lib/modules/ \;
+          
           cd AnyKernel3
-          zip -r9 ../S25Ultra_GKI内核.zip ./*
+          zip -r9 ../S25Ultra_GKI_Kernel.zip ./*
           cd ..
-          mv *.zip output/
+          mv S25Ultra_GKI_Kernel.zip output/
 
-      - name: 上传内核包
+      - name: 上传编译结果
         uses: actions/upload-artifact@v4
         with:
           name: S25Ultra-GKI-Kernel
-          path: output/
+          path: output/S25Ultra_GKI_Kernel.zip
 
