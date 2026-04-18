@@ -33,12 +33,14 @@ jobs:
           echo "编译已后台启动，PID: $BUILD_PID"
           echo "等待 Bazel 生成 .config 并立即替换..."
 
-          # 【已修正】真实编译内核用的 config 路径
-          TARGET_CONFIG="kernel_platform/out/android15-6.6/msm-kernel/.config"
-
+          # 精确匹配真实沙盒路径：两处*对应随机哈希+随机数字
           while true; do
-            if [ -f "$TARGET_CONFIG" ]; then
-              echo "⚡ 检测到 .config 已生成，立即覆盖"
+            TARGET_CONFIG=$(find kernel_platform/bazel-cache \
+              -path "*/sandbox/linux-sandbox/*/execroot/_main/out/android15-6.6/msm-kernel/.config" \
+              -type f 2>/dev/null | head -1)
+
+            if [ -n "$TARGET_CONFIG" ] && [ -f "$TARGET_CONFIG" ]; then
+              echo "⚡ 检测到真实 .config 已生成，立即覆盖"
               cp -f kernel_platform/S25.config "$TARGET_CONFIG"
               echo "✅ 替换成功，内核将使用你的配置编译"
               break
