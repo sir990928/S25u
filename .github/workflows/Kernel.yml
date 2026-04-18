@@ -1,101 +1,52 @@
-name: 三星S25u_内核编译_SukiSU版
-
+name: S25Ultra-GKI内核编译
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    steps:
+    steps>
       - uses: actions/checkout@v4
 
-      - name: 环境依赖
+      - name: 安装依赖
         run: |
-          sudo apt update -y
+          sudo apt update
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
-      - name: 注入 KernelSU
+      # 先集成KernelSU
+      - name: 集成KernelSU
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 启动编译，并安全替换最终.config
+      # 👇 编译开始前，先替换掉GKI默认配置
+      - name: 替换GKI内核配置文件
+        run: |
+          cp -fv kernel_platform/S25.config \
+                 kernel_platform/common/arch/arm64/configs/gki_defconfig
+
+      # 之后才开始编译
+      - name: 执行编译
         run: |
           chmod +x build_kernel_GKI.sh
+          ./build_kernel_GKI.sh pa3q_chn_openx user sun
 
-          ./build_kernel_GKI.sh pa3q_chn_openx user sun &
-          BUILD_PID=$!
-
-          echo "编译已启动，PID: $BUILD_PID"
-          sleep 5
-
-          MY_CONFIG="$GITHUB_WORKSPACE/kernel_platform/S25.config"
-
-          while true; do
-            # 只找已经生成完成的 .config，绝对不碰 tmp
-            find kernel_platform/bazel-cache \
-              -path "*/out/android15-6.6/msm-kernel/.config" \
-              -type f ! -name "*.tmp" 2>/dev/null | while read cfg; do
-
-              # 已经替换过就跳过
-              if grep -q "MY_CUSTOM_CONFIG" "$cfg" 2>/dev/null; then
-                continue
-              fi
-
-              echo "====================================================="
-              echo "✅ 发现完整 .config，开始安全替换"
-              echo "📂 $cfg"
-              echo "====================================================="
-
-              # 关键：先删旧的，再完整覆盖，不追加任何内容
-              rm -f "$cfg"
-              cp -f "$MY_CONFIG" "$cfg"
-              # 只在最后加一行干净标记，不破坏格式
-              echo "# MY_CUSTOM_CONFIG" >> "$cfg"
-
-            done
-
-            if ! kill -0 $BUILD_PID 2>/dev/null; then
-              echo "🏁 编译结束"
-              break
-            fi
-
-            sleep 1
-          done
-
-          wait $BUILD_PID
-
-      - name: 打包内核
+      # 打包
+      - name: 打包AnyKernel3
         run: |
           mkdir -p output
-          [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
-
-          find . -name "*.dtbo" -type f -not -path "./AnyKernel3/*" -exec cp {} dtbo_collection/ \;
-          MKDTBOIMG="kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg"
-          if [ -x "$MKDTBOIMG" ]; then
-            $MKDTBOIMG create AnyKernel3/dtbo.img dtbo_collection/*.dtbo
-          else
-            LARGE_DTBO=$(find . -name dtbo.img -type f | xargs ls -l | sort -nk 5 | tail -1 | awk '{print $NF}')
-            cp -f "$LARGE_DTBO" AnyKernel3/dtbo.img
-          fi
-
-          find . -name "*.ko" -type f -not -path "./AnyKernel3/*" -exec cp {} ko_collection/ \;
-          mkdir -p AnyKernel3/modules/lib/modules/
-          cp -af ko_collection/. AnyKernel3/modules/lib/modules/
-
-          IMAGE=$(find . -name Image -type f -path "*/dist/*" | head -1)
-          [ -z "$IMAGE" ] && IMAGE=$(find . -name Image -type f | head -1)
-
-          cp -f "$IMAGE" AnyKernel3/Image
+          git clone --depth=1 https://github.com/topjohnwu/AnyKernel3.git
+          find kernel_platform/out -name Image | head -1 | xargs -I {} cp {} AnyKernel3/
+          find kernel_platform/out -name *.dtbo | head -1 | xargs -I {} cp {} AnyKernel3/
+          find kernel_platform/out -name *.ko -exec cp {} AnyKernel3/modules/lib/modules/ \;
           cd AnyKernel3
-          zip -r9 ../S25u-SukiSU-Kernel-Final.zip ./*
+          zip -r9 ../S25Ultra_GKI内核.zip ./*
           cd ..
           mv *.zip output/
 
-      - uses: actions/upload-artifact@v4
+      - name: 上传内核包
+        uses: actions/upload-artifact@v4
         with:
-          name: S25u-Custom-Kernel-Final
+          name: S25Ultra-GKI-Kernel
           path: output/
 
