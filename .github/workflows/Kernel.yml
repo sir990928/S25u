@@ -1,4 +1,4 @@
-name: "S25Ultra-GKI内核精确劫持编译"
+name: "S25Ultra-GKI内核定点劫持编译"
 
 on:
   push:
@@ -26,20 +26,23 @@ jobs:
           cat > hijack_engine.sh <<'EOF'
           #!/bin/bash
           SOURCE_CONFIG="S25.config"
-          echo "🕵️ [$(date +%T)] 劫持进程已在后台埋伏..."
+          # 只有这个哈希段是变动的，其他路径全部写死
+          TARGET_PATTERN="/execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
           
-          # 持续监控 kernel_platform 目录下的文件关闭事件
+          echo "🕵️ [$(date +%T)] 劫持器已启动，目标锁定：$TARGET_PATTERN"
+          
+          # 监控整个目录树，-m 持续模式
           inotifywait -m -r -e close_write --format '%w%f' kernel_platform | while read NEW_FILE
           do
-              # 精确匹配你发现的核心路径：.../out_dir/.config
-              if [[ "$NEW_FILE" == *"kernel_aarch64_config/out_dir/.config" ]]; then
-                  # 核心动作：直接把我们的配置物理移过去覆盖它
+              # 精确校验路径：必须以我们锁定的那长串路径结尾
+              if [[ "$NEW_FILE" == *"$TARGET_PATTERN" ]]; then
+                  # 执行物理替换
                   cp -f "$SOURCE_CONFIG" "$NEW_FILE"
                   
-                  echo "🔥 [$(date +%T)] 物理劫持成功！"
-                  echo "📍 目标路径: $NEW_FILE"
+                  echo "🔥 [$(date +%T)] 目标捕获成功，已执行物理替换！"
+                  echo "📍 拦截路径: $NEW_FILE"
                   
-                  # 验证注入是否成功
+                  # 打印关键项确认注入结果
                   grep "CONFIG_LOCALVERSION=" "$NEW_FILE" || echo "⚠️ 警告: 写入失败"
               fi
           done
@@ -51,24 +54,23 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 执行劫持并编译
+      - name: 执行劫持并启动编译
         run: |
-          # 1. 启动后台劫持器
+          # 1. 后台启动劫持进程
           ./hijack_engine.sh &
           HIJACK_PID=$!
           
-          # 2. 开始编译
+          # 2. 正式开始编译
           chmod +x build_kernel_GKI.sh
-          # 尽可能绕过前置校验，让它快点走到生成 .config 的那一步
           export SKIP_DEFCONFIG_MATCH=1
           export SKIP_IF_SAVEDEFCONFIG_DOES_NOT_MATCH=1
           
           ./build_kernel_GKI.sh pa3q_chn_openx user sun
           
-          # 3. 结束后杀掉劫持进程
+          # 3. 结束后清理
           kill $HIJACK_PID || true
 
-      - name: 打包 AnyKernel3
+      - name: 打包与上传
         run: |
           mkdir -p output
           git clone --depth=1 https://github.com/topjohnwu/AnyKernel3.git
@@ -81,7 +83,7 @@ jobs:
           cd ..
           mv S25Ultra_SukiSU_Kernel.zip output/
 
-      - name: 上传内核产物
+      - name: 上传内核
         uses: actions/upload-artifact@v4
         with:
           name: S25Ultra-SukiSU-Kernel
