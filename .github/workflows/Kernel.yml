@@ -18,43 +18,6 @@ jobs:
           sudo apt update
           sudo apt install -y inotify-tools dos2unix
 
-      - name: 准备劫持引擎 (循环覆盖版)
-        run: |
-          SOURCE_PATH="kernel_platform/S25.config"
-          if [ ! -f "$SOURCE_PATH" ]; then
-            echo "❌ 错误: 找不到 $SOURCE_PATH" && exit 1
-          fi
-          dos2unix "$SOURCE_PATH"
-
-          mkdir -p kernel_platform/bazel-cache
-
-          cat > hijack_engine.sh <<'EOF'
-          #!/bin/bash
-          SOURCE_CONFIG="kernel_platform/common/S25.config"
-
-          TARGET_PATTERN="kernel_platform/bazel-cache/*/execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
-
-          echo "🕵️ [$(date +%T)] 劫持引擎启动，持续监控路径: $TARGET_PATTERN"
-name: "S25Ultra-GKI内核深度路径劫持"
-
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 安装劫持工具
-        run: |
-          sudo apt update
-          sudo apt install -y inotify-tools dos2unix
-
       - name: 准备劫持引擎
         run: |
           SOURCE_PATH="kernel_platform/common/S25.config"
@@ -68,7 +31,6 @@ jobs:
           cat > hijack_engine.sh <<'EOF'
           #!/bin/bash
           SOURCE_CONFIG="kernel_platform/common/S25.config"
-
           TARGET_PATH="execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
 
           echo "🕵️ [$(date +%T)] 劫持引擎启动"
