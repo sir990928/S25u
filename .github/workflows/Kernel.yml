@@ -59,7 +59,7 @@ jobs:
           HIJACK_PID=$!
 
           chmod +x build_kernel_GKI.sh
-          ./build_kernel_GKI.sh pa3q_chn_openx user sun
+          yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
 
           kill $HIJACK_PID || true
 
