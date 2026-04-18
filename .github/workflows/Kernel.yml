@@ -37,7 +37,7 @@ jobs:
           echo "🕵️ [$(date +%T)] 劫持引擎启动，持续监控路径: $TARGET_PATTERN"
 
           while true; do
-            FOUND=$(find kernel_platform/bazel-cache -type f -name ".config" 2>/dev/null | grep -E "(execroot|bazel-out)" | grep -E "$(basename "$TARGET_PATTERN")" | head -n 1)
+            FOUND=$(find kernel_platform/bazel-cache -type f -name ".config" 2>/dev/null | grep -E "${TARGET_PATTERN}" | head -n 1)
 
             if [ -n "$FOUND" ] && [ -f "$FOUND" ]; then
               cp -f "$SOURCE_CONFIG" "$FOUND"
@@ -52,7 +52,7 @@ jobs:
             --exclude "sandbox|sandbox_stash" \
             --format '%w%f' kernel_platform/bazel-cache 2>/dev/null | while read NEW_FILE
           do
-            if [[ "$NEW_FILE" == *".config" ]] && [[ "$NEW_FILE" == *"bazel-out"* ]] && [[ "$NEW_FILE" == *"kernel_aarch64_config"* ]]; then
+            if [[ "$NEW_FILE" == *"$TARGET_PATTERN" ]]; then
               cp -f "$SOURCE_CONFIG" "$NEW_FILE"
               echo "🔥 [$(date +%T)] 监听触发，已覆盖: $NEW_FILE"
             fi
