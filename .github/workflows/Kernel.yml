@@ -3,8 +3,8 @@ name: "S25Ultra-GKI内核编译"
 on:
   push:
     branches:
-      - main    # 当你 git push 到 main 分支时自动触发
-  workflow_dispatch: # 保留手动点击运行的按钮
+      - main
+  workflow_dispatch:
 
 jobs:
   build:
@@ -23,9 +23,24 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 替换 GKI 配置为 S25U
+      - name: 自定义内核配置（关闭安全+改名+开启KPM）
         run: |
-          cp -fv kernel_platform/S25.config kernel_platform/common/arch/arm64/configs/gki_defconfig
+          cd kernel_platform
+          cat >> common/arch/arm64/configs/gki_defconfig <<'EOF'
+CONFIG_UH=n
+CONFIG_KNOX_NCM=n
+CONFIG_RKP=n
+CONFIG_KDP=n
+CONFIG_LOCALVERSION_AUTO=n
+CONFIG_LOCALVERSION="SukiSU-Ultra"
+# CONFIG_FIVE is not set
+# CONFIG_PROCA is not set
+# CONFIG_GAF is not set
+# CONFIG_TRIM_UNUSED_KSYMS is not set
+# CONFIG_INTEGRITY is not set
+# CONFIG_SECURITY_DEFEX is not set
+CONFIG_KPM=y
+EOF
 
       - name: 开始编译
         run: |
@@ -37,11 +52,9 @@ jobs:
           mkdir -p output
           git clone --depth=1 https://github.com/topjohnwu/AnyKernel3.git
           
-          # 拷贝编译产物
           find kernel_platform/out -name Image -exec cp {} AnyKernel3/ \;
           find kernel_platform/out -name "*.dtbo" -exec cp {} AnyKernel3/ \;
           
-          # 创建路径并拷贝模块
           mkdir -p AnyKernel3/modules/lib/modules/
           find kernel_platform/out -name "*.ko" -exec cp {} AnyKernel3/modules/lib/modules/ \;
           
@@ -65,7 +78,6 @@ jobs:
           WORKFLOW_FILE="Kernel.yml"
           echo "正在清理历史失败记录（排除当前任务）..."
           
-          # 获取失败和取消的任务列表
           TARGET_IDS=$(gh run list --workflow "$WORKFLOW_FILE" --json databaseId,status \
             --jq '.[] | select(.status=="failure" or .status=="cancelled") | .databaseId')
           
