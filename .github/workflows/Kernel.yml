@@ -35,27 +35,53 @@ jobs:
           TARGET_PATTERN="kernel_platform/bazel-cache/*/execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
 
           echo "🕵️ [$(date +%T)] 劫持引擎启动，持续监控路径: $TARGET_PATTERN"
+name: "S25Ultra-GKI内核深度路径劫持"
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装劫持工具
+        run: |
+          sudo apt update
+          sudo apt install -y inotify-tools dos2unix
+
+      - name: 准备劫持引擎
+        run: |
+          SOURCE_PATH="kernel_platform/common/S25.config"
+          if [ ! -f "$SOURCE_PATH" ]; then
+            echo "❌ 错误: 找不到 $SOURCE_PATH" && exit 1
+          fi
+          dos2unix "$SOURCE_PATH"
+
+          mkdir -p kernel_platform/bazel-cache
+
+          cat > hijack_engine.sh <<'EOF'
+          #!/bin/bash
+          SOURCE_CONFIG="kernel_platform/common/S25.config"
+
+          TARGET_PATH="execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
+
+          echo "🕵️ [$(date +%T)] 劫持引擎启动"
+          echo "📍 监控路径: $TARGET_PATH"
 
           while true; do
-            FOUND=$(find kernel_platform/bazel-cache -type f -name ".config" 2>/dev/null | grep -E "${TARGET_PATTERN}" | head -n 1)
-
-            if [ -n "$FOUND" ] && [ -f "$FOUND" ]; then
-              cp -f "$SOURCE_CONFIG" "$FOUND"
-              echo "✅ [$(date +%T)] 已替换 .config → $FOUND"
-              grep -q "CONFIG_LOCALVERSION" "$FOUND" && echo "   验证: $(grep CONFIG_LOCALVERSION "$FOUND" | head -n1)"
-            fi
-
+            find kernel_platform/bazel-cache -type f -name ".config" 2>/dev/null | while read file; do
+              if [[ "$file" == *"$TARGET_PATH" ]]; then
+                cp -f "$SOURCE_CONFIG" "$file"
+                echo "✅ [$(date +%T)] 已替换: $file"
+              fi
+            done
             sleep 0.2
-          done &
-
-          inotifywait -m -r -e create,close_write,moved_to \
-            --exclude "sandbox|sandbox_stash" \
-            --format '%w%f' kernel_platform/bazel-cache 2>/dev/null | while read NEW_FILE
-          do
-            if [[ "$NEW_FILE" == *"$TARGET_PATTERN" ]]; then
-              cp -f "$SOURCE_CONFIG" "$NEW_FILE"
-              echo "🔥 [$(date +%T)] 监听触发，已覆盖: $NEW_FILE"
-            fi
           done
           EOF
           chmod +x hijack_engine.sh
@@ -65,7 +91,7 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 执行劫持并启动编译
+      - name: 执行劫持并编译
         run: |
           sudo nice -n -20 ./hijack_engine.sh &
           HIJACK_PID=$!
