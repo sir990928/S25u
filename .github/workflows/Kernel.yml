@@ -1,4 +1,4 @@
-name: "S25Ultra-GKI内核编译"
+name: "S25Ultra--GKI内核编译"
 
 on:
   workflow_dispatch:
