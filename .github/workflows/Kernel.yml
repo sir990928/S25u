@@ -27,7 +27,7 @@ jobs:
           chmod +x build_kernel_GKI.sh
           ./build_kernel_GKI.sh pa3q_chn_openx user sun
 
-      - name: 打包内核
+      - name: 打包AnyKernel3
         run: |
           mkdir -p output
           git clone --depth=1 https://github.com/topjohnwu/AnyKernel3.git
