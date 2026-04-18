@@ -23,24 +23,19 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 自定义内核配置（关闭安全+改名+开启KPM）
+      - name: 自定义内核配置
         run: |
+          # 使用追加模式直接写入配置，这种方式在 YAML 中最稳
           cd kernel_platform
-          cat >> common/arch/arm64/configs/gki_defconfig <<'EOF'
-CONFIG_UH=n
-CONFIG_KNOX_NCM=n
-CONFIG_RKP=n
-CONFIG_KDP=n
-CONFIG_LOCALVERSION_AUTO=n
-CONFIG_LOCALVERSION="SukiSU-Ultra"
-# CONFIG_FIVE is not set
-# CONFIG_PROCA is not set
-# CONFIG_GAF is not set
-# CONFIG_TRIM_UNUSED_KSYMS is not set
-# CONFIG_INTEGRITY is not set
-# CONFIG_SECURITY_DEFEX is not set
-CONFIG_KPM=y
-EOF
+          echo "CONFIG_UH=n" >> common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KNOX_NCM=n" >> common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_RKP=n" >> common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KDP=n" >> common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_LOCALVERSION_AUTO=n" >> common/arch/arm64/configs/gki_defconfig
+          echo 'CONFIG_LOCALVERSION="SukiSU-Ultra"' >> common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KPM=y" >> common/arch/arm64/configs/gki_defconfig
+          echo "# CONFIG_FIVE is not set" >> common/arch/arm64/configs/gki_defconfig
+          echo "# CONFIG_PROCA is not set" >> common/arch/arm64/configs/gki_defconfig
 
       - name: 开始编译
         run: |
@@ -76,14 +71,12 @@ EOF
           CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
           WORKFLOW_FILE="Kernel.yml"
-          echo "正在清理历史失败记录（排除当前任务）..."
-          
+          echo "正在清理历史失败记录..."
           TARGET_IDS=$(gh run list --workflow "$WORKFLOW_FILE" --json databaseId,status \
             --jq '.[] | select(.status=="failure" or .status=="cancelled") | .databaseId')
           
           for run_id in $TARGET_IDS; do
             if [ "$run_id" != "$CURRENT_RUN_ID" ]; then
-              echo "清理记录 ID: $run_id"
               gh run delete "$run_id"
             fi
           done
