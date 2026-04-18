@@ -33,8 +33,8 @@ jobs:
           echo "编译已后台启动，PID: $BUILD_PID"
           echo "等待 Bazel 生成 .config 并立即替换..."
 
-          # 高速监听，一出现就替换
-          TARGET_CONFIG="kernel_platform/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
+          # 【已修正】真实编译内核用的 config 路径
+          TARGET_CONFIG="kernel_platform/out/android15-6.6/msm-kernel/.config"
 
           while true; do
             if [ -f "$TARGET_CONFIG" ]; then
