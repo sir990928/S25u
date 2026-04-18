@@ -26,22 +26,21 @@ jobs:
         run: |
           chmod +x build_kernel_GKI.sh
 
-          # 后台启动编译，不卡住脚本
+          # 后台启动编译，拿到 PID
           ./build_kernel_GKI.sh pa3q_chn_openx user sun &
           BUILD_PID=$!
 
-          echo "编译后台启动 PID: $BUILD_PID"
-          echo "等待 .config 生成并立即替换……"
+          echo "编译已后台启动，PID: $BUILD_PID"
+          echo "等待 Bazel 生成 .config 并立即替换..."
 
-          # 监听 Bazel 生成的通用内核配置
+          # 高速监听，一出现就替换
           TARGET_CONFIG="kernel_platform/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
 
           while true; do
-            # 一出现就替换，保证在编译开始前换掉
             if [ -f "$TARGET_CONFIG" ]; then
               echo "⚡ 检测到 .config 已生成，立即覆盖"
               cp -f kernel_platform/S25.config "$TARGET_CONFIG"
-              echo "✅ 替换成功"
+              echo "✅ 替换成功，内核将使用你的配置编译"
               break
             fi
 
@@ -54,7 +53,7 @@ jobs:
             sleep 0.2
           done
 
-          # 等待编译完整结束
+          # 等待编译完成
           wait $BUILD_PID
 
       - name: 根目录全路径搜刮与暴力打包
@@ -65,11 +64,9 @@ jobs:
           mkdir -p dtbo_collection
           mkdir -p ko_collection
           # 2. 【搜刮 DTBO 碎片】
-          # 从根目录开始执行全路径扫荡，找回消失的 15MB 硬件配置
           echo "正在全路径搜刮 .dtbo 碎片..."
           find . -name "*.dtbo" -type f -not -path "./AnyKernel3/*" -exec cp -f {} dtbo_collection/ \;
-          # 3. 【合成 20MB 完全体 DTBO】
-          # 调用指定的专用工具，将所有搜刮到的碎片压制成一个 dtbo.img
+          # 3. 【合成完全体 DTBO】
           MKDTBOIMG="kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg"
           if [ -f "$MKDTBOIMG" ]; then
             echo "开始合成完全体设备树镜像..."
@@ -80,13 +77,11 @@ jobs:
             find . -name "dtbo.img" -type f -not -path "./AnyKernel3/*" -exec ls -l {} + | sort -nk 5 | tail -1 | awk '{print $NF}' | xargs -I{} cp -f {} AnyKernel3/dtbo.img
           fi
           # 4. 【搜刮 KO 驱动】
-          # 从根目录搜刮所有驱动模块，确保 WiFi/蓝牙等硬件驱动版本对齐
           echo "正在全路径搜刮 .ko 驱动..."
           find . -name "*.ko" -type f -not -path "./AnyKernel3/*" -exec cp -f {} ko_collection/ \;
           mkdir -p AnyKernel3/modules/lib/modules/
           cp -af ko_collection/. AnyKernel3/modules/lib/modules/
           # 5. 【获取核心内核 Image】
-          # 从根目录扫荡 Image，优先获取 dist 目录下的最终产物
           IMAGE=$(find . -name "Image" -type f -path "*/dist/*" | head -1)
           [ -z "$IMAGE" ] && IMAGE=$(find . -name "Image" -type f | head -1)
           
