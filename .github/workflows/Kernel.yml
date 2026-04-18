@@ -21,38 +21,44 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 编译 + 批量替换.config（替换过自动跳过）
+      - name: 启动编译，并安全替换最终.config
         run: |
           chmod +x build_kernel_GKI.sh
 
           ./build_kernel_GKI.sh pa3q_chn_openx user sun &
           BUILD_PID=$!
 
-          echo "编译已启动 PID: $BUILD_PID"
-          sleep 3
+          echo "编译已启动，PID: $BUILD_PID"
+          sleep 5
 
-          MY_CONFIG="kernel_platform/S25.config"
+          MY_CONFIG="$GITHUB_WORKSPACE/kernel_platform/S25.config"
 
           while true; do
-            # 找出所有沙盒里的 msm-kernel.config
+            # 只找已经生成完成的 .config，绝对不碰 tmp
             find kernel_platform/bazel-cache \
-              -path "*/sandbox/linux-sandbox/*/out/android15-6.6/msm-kernel/.config" \
-              -type f 2>/dev/null | while read cfg; do
+              -path "*/out/android15-6.6/msm-kernel/.config" \
+              -type f ! -name "*.tmp" 2>/dev/null | while read cfg; do
 
-              # 替换过就跳过
-              if grep -q "REPLACED" "$cfg"; then
+              # 已经替换过就跳过
+              if grep -q "MY_CUSTOM_CONFIG" "$cfg" 2>/dev/null; then
                 continue
               fi
 
-              echo "替换配置: $cfg"
+              echo "====================================================="
+              echo "✅ 发现完整 .config，开始安全替换"
+              echo "📂 $cfg"
+              echo "====================================================="
+
+              # 关键：先删旧的，再完整覆盖，不追加任何内容
+              rm -f "$cfg"
               cp -f "$MY_CONFIG" "$cfg"
-              echo "# REPLACED" >> "$cfg"
+              # 只在最后加一行干净标记，不破坏格式
+              echo "# MY_CUSTOM_CONFIG" >> "$cfg"
 
             done
 
-            # 编译退出就结束
             if ! kill -0 $BUILD_PID 2>/dev/null; then
-              echo "编译完成"
+              echo "🏁 编译结束"
               break
             fi
 
@@ -66,11 +72,8 @@ jobs:
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
 
-          mkdir -p dtbo_collection ko_collection
-
           find . -name "*.dtbo" -type f -not -path "./AnyKernel3/*" -exec cp {} dtbo_collection/ \;
           MKDTBOIMG="kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg"
-
           if [ -x "$MKDTBOIMG" ]; then
             $MKDTBOIMG create AnyKernel3/dtbo.img dtbo_collection/*.dtbo
           else
@@ -85,19 +88,14 @@ jobs:
           IMAGE=$(find . -name Image -type f -path "*/dist/*" | head -1)
           [ -z "$IMAGE" ] && IMAGE=$(find . -name Image -type f | head -1)
 
-          if [ -z "$IMAGE" ]; then
-            echo "❌ 找不到内核镜像"
-            exit 1
-          fi
-
           cp -f "$IMAGE" AnyKernel3/Image
           cd AnyKernel3
-          zip -r9 ../S25u-SukiSU-Kernel.zip ./*
+          zip -r9 ../S25u-SukiSU-Kernel-Final.zip ./*
           cd ..
           mv *.zip output/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: S25u-Custom-Kernel
+          name: S25u-Custom-Kernel-Final
           path: output/
 
