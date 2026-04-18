@@ -43,19 +43,20 @@ jobs:
             find kernel_platform/bazel-cache -type f -name ".config" 2>/dev/null | while read file; do
               if [[ "$file" == *"$TARGET_PATH" ]]; then
 
-                # 获取文件当前修改时间戳
-                ts=$(stat -c "%Y" "$file")
+                ts=$(stat -c "%Y" "$file" 2>/dev/null)
+                if [ -z "$ts" ]; then
+                  continue
+                fi
 
-                # 获取我们上次替换的时间戳
-                old_ts=$(grep -xF "$file" $DB | awk '{print $2}' || echo 0)
+                old_ts=$(awk -v f="$file" '$1 == f {print $2}' $DB)
+                old_ts=${old_ts:-0}
 
-                # 如果文件时间 > 上次替换时间 → 重新替换
                 if [ "$ts" -gt "$old_ts" ]; then
                   cp -f "$SOURCE_CONFIG" "$file"
-                  new_ts=$(stat -c "%Y" "$file")
-                  grep -v "^$file " $DB > $DB.tmp || true
-                  echo "$file $new_ts" >> $DB.tmp
-                  mv $DB.tmp $DB
+                  new_ts=$(stat -c "%Y" "$file" 2>/dev/null)
+                  awk -v f="$file" -v ts="$new_ts" '$1 != f' $DB > $DB.tmp
+                  echo "$f $ts" >> $DB.tmp
+                  mv -f $DB.tmp $DB
                   echo "✅ [$(date +%T)] 替换完成: $file"
                 fi
               fi
