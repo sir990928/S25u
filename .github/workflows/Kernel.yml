@@ -71,9 +71,6 @@ jobs:
           HIJACK_PID=$!
 
           chmod +x build_kernel_GKI.sh
-          export SKIP_DEFCONFIG_MATCH=1
-          export SKIP_IF_SAVEDEFCONFIG_DOES_NOT_MATCH=1
-
           ./build_kernel_GKI.sh pa3q_chn_openx user sun
 
           kill $HIJACK_PID || true
@@ -83,12 +80,9 @@ jobs:
           mkdir -p output
           git clone --depth=1 https://github.com/topjohnwu/AnyKernel3.git
 
-          # 只从根目录搜索 Image
           find . -name "Image" -type f | head -n 1 | xargs -I {} cp {} AnyKernel3/
 
           cd AnyKernel3
-
-          # 从根目录直接打包 out 和 drivers
           cp -r ../out .
           cp -r ../drivers .
 
