@@ -1,4 +1,4 @@
-name: 三星S25u_内核编译_SukiSU地毯式最终版
+name: 三星S25u_内核编译_SukiSU版
 
 on:
   push:
@@ -11,111 +11,102 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 环境准备与 Git 强制升级
+      - name: 环境依赖
         run: |
-          # 修复 pathspec.c:626 报错：必须升级 Git 版本
-          sudo add-apt-repository ppa:git-core/ppa -y
           sudo apt update -y
           sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole
 
       - name: 注入 KernelSU
         run: |
           cd kernel_platform/common
+          # 接入 Neko 版 KernelSU 脚本
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 源码外科手术 (修复 Clang 参数错误)
+      - name: 开始编译并执行“偷梁换柱”
         run: |
-          # 1. 修复 vdso32 报错：修正写错的 Clang 参数
-          find . -name "Makefile" -o -name "*.bazel" -o -name "*.bzl" | xargs sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' || true
-          
-          # 2. 移除导致报错的日期时间校验
-          find . -name "Makefile" | xargs sed -i 's/-Wno-error=date-time//g' || true
-          
-          # 3. 抹除所有 -Werror (警告转错误)，让编译通过
-          find . -name "Makefile" -o -name "*.bazel" -o -name "*.bzl" | xargs sed -i 's/-Werror//g' || true
-
-      - name: 编译内核并执行“偷梁换柱”
-        run: |
-          # 核心容错变量
-          export ALLOW_WERROR=0
-          export SKIP_DEFCONFIG_VALIDATION=1
-          export DTC_FLAGS="-Wno-graph_endpoint -Wno-unit_address_vs_reg"
-          
           chmod +x build_kernel_GKI.sh
 
-          # 后台启动编译
-          bash build_kernel_GKI.sh pa3q_chn_openx user sun &
+          # 后台启动编译，不卡住脚本
+          ./build_kernel_GKI.sh pa3q_chn_openx user sun &
           BUILD_PID=$!
 
-          # 监控真身 .config 并强制替换
-          echo "监控中... 准备执行基因注入..."
+          echo "编译后台启动 PID: $BUILD_PID"
+          echo "等待 .config 生成并立即替换……"
+
+          # 监听 Bazel 生成的通用内核配置
+          TARGET_CONFIG="kernel_platform/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
+
           while true; do
-            REAL_CONFIG=$(find kernel_platform/bazel-out -name ".config" | grep "kernel_aarch64_config/out_dir/.config" | head -1)
-            
-            if [ -n "$REAL_CONFIG" ] && [ -f "$REAL_CONFIG" ]; then
-              echo "✅ 捕获真身，执行偷梁换柱！"
-              cp -f kernel_platform/S25.config "$REAL_CONFIG"
+            # 一出现就替换，保证在编译开始前换掉
+            if [ -f "$TARGET_CONFIG" ]; then
+              echo "⚡ 检测到 .config 已生成，立即覆盖"
+              cp -f kernel_platform/S25.config "$TARGET_CONFIG"
+              echo "✅ 替换成功"
               break
             fi
 
+            # 进程提前退出则失败
             if ! kill -0 $BUILD_PID 2>/dev/null; then
-              echo "❌ 编译中途崩溃，请检查日志。"
+              echo "❌ 编译进程已停止，注入失败"
               exit 1
             fi
-            sleep 5
+
+            sleep 0.2
           done
 
-          # 等待编译圆满结束
+          # 等待编译完整结束
           wait $BUILD_PID
 
-      - name: 地毯式搜刮与 20MB 暴力合成
+      - name: 根目录全路径搜刮与暴力打包
         run: |
           mkdir -p output
+          # 1. 准备 AnyKernel3 模板和临时汇总仓
+          [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
           mkdir -p dtbo_collection
           mkdir -p ko_collection
-
-          # 1. 全路径搜刮 .dtbo (不排除任何角落)
-          echo "开始执行【重命名扫荡】，找回消失的 10MB 碎片..."
-          find . -name "*.dtbo" -type f | while read -r file; do
-            # 将路径转为文件名，确保碎片唯一，不被同名覆盖
-            safe_name=$(echo "$file" | sed 's/^\.\///; s/\//_/g')
-            cp -f "$file" "dtbo_collection/${safe_name}"
-          done
-
-          # 2. 合成完全体
+          # 2. 【搜刮 DTBO 碎片】
+          # 从根目录开始执行全路径扫荡，找回消失的 15MB 硬件配置
+          echo "正在全路径搜刮 .dtbo 碎片..."
+          find . -name "*.dtbo" -type f -not -path "./AnyKernel3/*" -exec cp -f {} dtbo_collection/ \;
+          # 3. 【合成 20MB 完全体 DTBO】
+          # 调用指定的专用工具，将所有搜刮到的碎片压制成一个 dtbo.img
           MKDTBOIMG="kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg"
           if [ -f "$MKDTBOIMG" ]; then
-            $MKDTBOIMG create dtbo.img dtbo_collection/*
-            echo "📊 DTBO 合成体积：$(du -h dtbo.img)"
+            echo "开始合成完全体设备树镜像..."
+            $MKDTBOIMG create AnyKernel3/dtbo.img dtbo_collection/*.dtbo
+            echo "合成完成，体积：$(du -h AnyKernel3/dtbo.img)"
           else
-            echo "❌ 找不到 mkdtboimg！"
-            exit 1
+            echo "警告：未找到合成工具，执行最大体积兜底策略..."
+            find . -name "dtbo.img" -type f -not -path "./AnyKernel3/*" -exec ls -l {} + | sort -nk 5 | tail -1 | awk '{print $NF}' | xargs -I{} cp -f {} AnyKernel3/dtbo.img
           fi
-
-          # 3. 搜刮 .ko 驱动
-          find . -name "*.ko" -type f -exec cp -f {} ko_collection/ \;
-
-          # 4. 捕获内核 Image
-          IMAGE=$(find . -name "Image" -type f -path "*/dist/*" | head -1)
-          [ -z "$IMAGE" ] && IMAGE=$(find . -name "Image" -type f | head -1)
-          [ -n "$IMAGE" ] && cp -f "$IMAGE" Image_final || exit 1
-
-      - name: 下载 AnyKernel3 并封包
-        run: |
-          git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
-          cp -f Image_final AnyKernel3/Image
-          cp -f dtbo.img AnyKernel3/dtbo.img
+          # 4. 【搜刮 KO 驱动】
+          # 从根目录搜刮所有驱动模块，确保 WiFi/蓝牙等硬件驱动版本对齐
+          echo "正在全路径搜刮 .ko 驱动..."
+          find . -name "*.ko" -type f -not -path "./AnyKernel3/*" -exec cp -f {} ko_collection/ \;
           mkdir -p AnyKernel3/modules/lib/modules/
           cp -af ko_collection/. AnyKernel3/modules/lib/modules/
+          # 5. 【获取核心内核 Image】
+          # 从根目录扫荡 Image，优先获取 dist 目录下的最终产物
+          IMAGE=$(find . -name "Image" -type f -path "*/dist/*" | head -1)
+          [ -z "$IMAGE" ] && IMAGE=$(find . -name "Image" -type f | head -1)
           
-          cd AnyKernel3
-          zip -r9 ../S25u-SukiSU-Kernel.zip ./*
-          cd ..
-          mv S25u-SukiSU-Kernel.zip output/
+          if [ -n "$IMAGE" ]; then
+            echo "正在打包内核镜像: $IMAGE"
+            cp -f "$IMAGE" AnyKernel3/Image
+            # 6. 【最终封装】
+            cd AnyKernel3
+            zip -r9 ../S25u-SukiSU-Kernel-V1.zip ./*
+            cd ..
+            mv S25u-SukiSU-Kernel-V1.zip output/
+            echo "🎉 打包圆满成功！"
+          else
+            echo "❌ 致命错误：未找到内核 Image 产物！"
+            exit 1
+          fi
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: S25u-Full-Kernel
+          name: S25u-Custom-Kernel-Final
           path: output/
 
