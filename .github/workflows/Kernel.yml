@@ -1,4 +1,4 @@
-name: "S25Ultra-GKI内核编译"
+name: "S25Ultra-GKI内核精确劫持编译"
 
 on:
   push:
@@ -13,100 +13,77 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 安装依赖
+      - name: 安装劫持工具
         run: |
           sudo apt update
-          sudo apt install -y curl wget unzip zip git build-essential libssl-dev bc python3 flex bison libelf-dev lz4 cpio dos2unix pahole dwarves
+          sudo apt install -y inotify-tools dos2unix
+
+      - name: 准备劫持引擎
+        run: |
+          # 确保根目录有你的完美版 S25.config
+          [ -f "S25.config" ] && dos2unix S25.config || (echo "❌ 错误: 找不到 S25.config" && exit 1)
+          
+          cat > hijack_engine.sh <<'EOF'
+          #!/bin/bash
+          SOURCE_CONFIG="S25.config"
+          echo "🕵️ [$(date +%T)] 劫持进程已在后台埋伏..."
+          
+          # 持续监控 kernel_platform 目录下的文件关闭事件
+          inotifywait -m -r -e close_write --format '%w%f' kernel_platform | while read NEW_FILE
+          do
+              # 精确匹配你发现的核心路径：.../out_dir/.config
+              if [[ "$NEW_FILE" == *"kernel_aarch64_config/out_dir/.config" ]]; then
+                  # 核心动作：直接把我们的配置物理移过去覆盖它
+                  cp -f "$SOURCE_CONFIG" "$NEW_FILE"
+                  
+                  echo "🔥 [$(date +%T)] 物理劫持成功！"
+                  echo "📍 目标路径: $NEW_FILE"
+                  
+                  # 验证注入是否成功
+                  grep "CONFIG_LOCALVERSION=" "$NEW_FILE" || echo "⚠️ 警告: 写入失败"
+              fi
+          done
+          EOF
+          chmod +x hijack_engine.sh
 
       - name: 集成 KernelSU
         run: |
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 自定义配置并绕过 Bazel 校验
+      - name: 执行劫持并编译
         run: |
-          # 1. 禁用 BUILD.bazel 中的 check_defconfig 逻辑
-          # 这样无论 defconfig 怎么改，Bazel 都会强行通过
-          find kernel_platform -name "BUILD.bazel" -exec sed -i 's/check_defconfig/echo/g' {} +
-
-          # 2. 修改内核配置
-          DEFCONFIG="kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          # 1. 启动后台劫持器
+          ./hijack_engine.sh &
+          HIJACK_PID=$!
           
-          # 清理旧项
-          sed -i '/CONFIG_UH/d' $DEFCONFIG
-          sed -i '/CONFIG_KNOX_NCM/d' $DEFCONFIG
-          sed -i '/CONFIG_RKP/d' $DEFCONFIG
-          sed -i '/CONFIG_KDP/d' $DEFCONFIG
-          sed -i '/CONFIG_LOCALVERSION/d' $DEFCONFIG
-          sed -i '/CONFIG_KPM/d' $DEFCONFIG
-          sed -i '/CONFIG_FIVE/d' $DEFCONFIG
-          sed -i '/CONFIG_PROCA/d' $DEFCONFIG
-          sed -i '/CONFIG_GAF/d' $DEFCONFIG
-          sed -i '/CONFIG_TRIM_UNUSED_KSYMS/d' $DEFCONFIG
-          sed -i '/CONFIG_INTEGRITY/d' $DEFCONFIG
-          sed -i '/CONFIG_SECURITY_DEFEX/d' $DEFCONFIG
-
-          # 写入新项
-          {
-            echo "CONFIG_UH=n"
-            echo "CONFIG_KNOX_NCM=n"
-            echo "CONFIG_RKP=n"
-            echo "CONFIG_KDP=n"
-            echo "CONFIG_LOCALVERSION_AUTO=n"
-            echo 'CONFIG_LOCALVERSION="-SukiSU-Ultra"'
-            echo "CONFIG_KPM=y"
-            echo "# CONFIG_FIVE is not set"
-            echo "# CONFIG_PROCA is not set"
-            echo "# CONFIG_GAF is not set"
-            echo "# CONFIG_TRIM_UNUSED_KSYMS is not set"
-            echo "# CONFIG_INTEGRITY is not set"
-            echo "# CONFIG_SECURITY_DEFEX is not set"
-          } >> $DEFCONFIG
-
-      - name: 开始编译
-        run: |
+          # 2. 开始编译
           chmod +x build_kernel_GKI.sh
-          # 启用所有可能的跳过校验环境变量
+          # 尽可能绕过前置校验，让它快点走到生成 .config 的那一步
           export SKIP_DEFCONFIG_MATCH=1
           export SKIP_IF_SAVEDEFCONFIG_DOES_NOT_MATCH=1
+          
           ./build_kernel_GKI.sh pa3q_chn_openx user sun
+          
+          # 3. 结束后杀掉劫持进程
+          kill $HIJACK_PID || true
 
       - name: 打包 AnyKernel3
         run: |
           mkdir -p output
           git clone --depth=1 https://github.com/topjohnwu/AnyKernel3.git
-          
           find kernel_platform/out -name Image -exec cp {} AnyKernel3/ \;
           find kernel_platform/out -name "*.dtbo" -exec cp {} AnyKernel3/ \;
-          
           mkdir -p AnyKernel3/modules/lib/modules/
           find kernel_platform/out -name "*.ko" -exec cp {} AnyKernel3/modules/lib/modules/ \;
-          
           cd AnyKernel3
-          zip -r9 ../S25Ultra_GKI_Kernel.zip ./*
+          zip -r9 ../S25Ultra_SukiSU_Kernel.zip ./*
           cd ..
-          mv S25Ultra_GKI_Kernel.zip output/
+          mv S25Ultra_SukiSU_Kernel.zip output/
 
-      - name: 上传内核包
+      - name: 上传内核产物
         uses: actions/upload-artifact@v4
         with:
-          name: S25Ultra-GKI-Kernel
-          path: output/S25Ultra_GKI_Kernel.zip
-
-      - name: 自动清理历史失败记录
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CURRENT_RUN_ID: ${{ github.run_id }}
-        run: |
-          WORKFLOW_FILE="Kernel.yml"
-          TARGET_IDS=$(gh run list --workflow "$WORKFLOW_FILE" --json databaseId,status \
-            --jq '.[] | select(.status=="failure" or .status=="cancelled") | .databaseId')
-          
-          for run_id in $TARGET_IDS; do
-            if [ "$run_id" != "$CURRENT_RUN_ID" ]; then
-              gh run delete "$run_id"
-            fi
-          done
-        continue-on-error: true
+          name: S25Ultra-SukiSU-Kernel
+          path: output/S25Ultra_SukiSU_Kernel.zip
 
