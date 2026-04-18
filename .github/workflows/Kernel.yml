@@ -21,80 +21,67 @@ jobs:
           cd kernel_platform/common
           curl -LSs "https://raw.githubusercontent.com/ShirkNeko/KernelSU/main/kernel/setup.sh" | bash -s gki
 
-      - name: 启动编译并后台替换.config
+      - name: 编译 + 批量替换.config（替换过自动跳过）
         run: |
           chmod +x build_kernel_GKI.sh
+
           ./build_kernel_GKI.sh pa3q_chn_openx user sun &
           BUILD_PID=$!
 
-          echo "编译 PID: $BUILD_PID"
-          echo "正在等待内核生成 .config 并强制替换..."
+          echo "编译已启动 PID: $BUILD_PID"
+          sleep 3
 
-          # 自己的配置
-          MY_CONFIG="$GITHUB_WORKSPACE/kernel_platform/S25.config"
+          MY_CONFIG="kernel_platform/S25.config"
 
-          # 循环：找到真正被内核使用的 .config
           while true; do
-            # 找出所有在沙盒里、且属于本次编译的 .config
-            CONFIG_FILES=$(find kernel_platform/bazel-cache \
+            # 找出所有沙盒里的 msm-kernel.config
+            find kernel_platform/bazel-cache \
               -path "*/sandbox/linux-sandbox/*/out/android15-6.6/msm-kernel/.config" \
-              -type f 2>/dev/null)
+              -type f 2>/dev/null | while read cfg; do
 
-            for cfg in $CONFIG_FILES; do
-              # 已经替换过就跳过
-              if grep -q "MY_CUSTOM_CONFIG_REPLACED" "$cfg"; then
+              # 替换过就跳过
+              if grep -q "REPLACED" "$cfg"; then
                 continue
               fi
 
-              echo "========================================================"
-              echo "🔎 发现内核编译使用的 .config"
-              echo "📂 路径: $cfg"
-              echo "========================================================"
-
-              # 强制替换
+              echo "替换配置: $cfg"
               cp -f "$MY_CONFIG" "$cfg"
-              echo "# MY_CUSTOM_CONFIG_REPLACED" >> "$cfg"
+              echo "# REPLACED" >> "$cfg"
 
-              echo "✅ 已替换为你的自定义配置"
-              break 2
             done
 
-            # 编译崩了就退出
+            # 编译退出就结束
             if ! kill -0 $BUILD_PID 2>/dev/null; then
-              echo "❌ 编译进程已退出"
-              exit 1
+              echo "编译完成"
+              break
             fi
 
-            sleep 0.3
+            sleep 1
           done
 
-          # 等编译结束
           wait $BUILD_PID
 
-      - name: 搜刮镜像并打包
+      - name: 打包内核
         run: |
           mkdir -p output
           [ ! -d AnyKernel3 ] && git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 AnyKernel3
 
           mkdir -p dtbo_collection ko_collection
 
-          # 拿 dtbo
           find . -name "*.dtbo" -type f -not -path "./AnyKernel3/*" -exec cp {} dtbo_collection/ \;
           MKDTBOIMG="kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg"
 
           if [ -x "$MKDTBOIMG" ]; then
             $MKDTBOIMG create AnyKernel3/dtbo.img dtbo_collection/*.dtbo
           else
-            LARGE_DTBO=$(find . -name dtbo.img -type f -not -path "./AnyKernel3/*" | xargs ls -l | sort -nk 5 | tail -1 | awk '{print $NF}')
+            LARGE_DTBO=$(find . -name dtbo.img -type f | xargs ls -l | sort -nk 5 | tail -1 | awk '{print $NF}')
             cp -f "$LARGE_DTBO" AnyKernel3/dtbo.img
           fi
 
-          # 拿 ko
           find . -name "*.ko" -type f -not -path "./AnyKernel3/*" -exec cp {} ko_collection/ \;
           mkdir -p AnyKernel3/modules/lib/modules/
           cp -af ko_collection/. AnyKernel3/modules/lib/modules/
 
-          # 拿 Image
           IMAGE=$(find . -name Image -type f -path "*/dist/*" | head -1)
           [ -z "$IMAGE" ] && IMAGE=$(find . -name Image -type f | head -1)
 
