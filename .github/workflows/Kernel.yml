@@ -30,7 +30,7 @@ jobs:
 
           cat > hijack_engine.sh <<'EOF'
           #!/bin/bash
-          SOURCE_CONFIG="kernel_platform/S25.config"
+          SOURCE_CONFIG="kernel_platform/common/S25.config"
 
           TARGET_PATTERN="kernel_platform/bazel-cache/*/execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
 
