@@ -1,7 +1,10 @@
-name: "S25Ultra--GKI内核编译"
+name: "S25Ultra-GKI内核编译"
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main    # 当你 git push 到 main 分支时自动触发
+  workflow_dispatch: # 保留手动点击运行的按钮
 
 jobs:
   build:
@@ -60,18 +63,16 @@ jobs:
           CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
           WORKFLOW_FILE="Kernel.yml"
-          echo "开始扫描旧的失败记录..."
+          echo "正在清理历史失败记录（排除当前任务）..."
           
-          # 获取失败和已取消的任务ID列表
+          # 获取失败和取消的任务列表
           TARGET_IDS=$(gh run list --workflow "$WORKFLOW_FILE" --json databaseId,status \
             --jq '.[] | select(.status=="failure" or .status=="cancelled") | .databaseId')
           
           for run_id in $TARGET_IDS; do
             if [ "$run_id" != "$CURRENT_RUN_ID" ]; then
-              echo "正在清理旧任务 ID: $run_id"
+              echo "清理记录 ID: $run_id"
               gh run delete "$run_id"
-            else
-              echo "跳过当前运行的任务: $run_id"
             fi
           done
         continue-on-error: true
