@@ -55,7 +55,8 @@ jobs:
           
           # 执行唯一编译进程 (直接输出到屏幕)
           export LOCALVERSION=""
-          yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
+          # 只改这里：关闭 LTO，其他完全不动
+          yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun lto=none
           
           kill $HIJACK_PID || true
 
