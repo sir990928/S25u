@@ -1,15 +1,15 @@
 #!/bin/bash
 
-# --- 1. 分路径目标 ---
+# --- 目标路径 ---
 TARGET_APPEND=(
     "kernel_platform/bazel-cache/*/execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
 )
 
-TARGET_MODIFY_ONLY=(
+TARGET_MODIFY_EXISTING=(
     "kernel_platform/bazel-cache/*/execroot/_main/bazel-out/k8-fastbuild/bin/msm-kernel/sun_perf_config/out_dir/.config"
 )
 
-# --- 2. 配置清单 ---
+# --- 配置 ---
 CONFIGS=(
     "KNOX_NCM" "SEC_RESTRICT_FORK" "SEC_RESTRICT_ROOTING"
     "UH" "RKP" "KDP" "LOCALVERSION_AUTO" "GAF" "FIVE" "PROCA"
@@ -42,77 +42,71 @@ ENABLE=(
 
 NEW_VERSION="-SukiSU-Ultra"
 
-# --- 3. 数据库 ---
-TIME_DB="/tmp/.hijack_time_db"
-touch "$TIME_DB"
-COUNT=0
-
-# 追加用的完整块
-PAYLOAD=$(cat <<EOF
-
-# --- SUKISU HIJACK FINAL OVERRIDE ---
-CONFIG_LOCALVERSION="${NEW_VERSION}"
+# --- 一次性拼好 ---
+PAYLOAD="
+# --- SUKISU HIJACK ---
+CONFIG_LOCALVERSION=\"$NEW_VERSION\"
 $(for c in "${ENABLE[@]}"; do echo "CONFIG_$c=y"; done)
 $(for c in "${CONFIGS[@]}"; do echo "# CONFIG_$c is not set"; done)
-# --- END SUKISU ---
-EOF
-)
+# --- END ---
+"
 
-echo "🚀 [$(date +%T)] 双模式：路径1追加，路径2仅修改"
+TIME_DB="/tmp/.hijack_time_db"
+touch "$TIME_DB"
 
+# --- 主循环 ---
 while true; do
-    # --------------------------
-    # 第一类：整段追加
-    # --------------------------
+    # ======================================
+    # 第一个：直接追加，啥也不管
+    # ======================================
     for f in "${TARGET_APPEND[@]}"; do
         [ -f "$f" ] || continue
-        ts=$(stat -c "%Y" "$f" 2>/dev/null)
-        [ -z "$ts" ] && continue
-        old_ts=$(awk -v f="$f" '$1==f{print $2}' "$TIME_DB" 2>/dev/null)
-        old_ts=${old_ts:-0}
+        ts=$(stat -c "%Y" "$f" 2>/dev/null || echo 0)
+        old_ts=$(awk -v f="$f" '$1==f{print $2}' "$TIME_DB" 2>/dev/null || echo 0)
 
         if [ "$ts" -gt "$old_ts" ]; then
-            ((COUNT++))
             echo "$PAYLOAD" >> "$f"
             sync "$f"
             awk -v f="$f" -v ts="$ts" '$1!=f' "$TIME_DB" > "$TIME_DB.tmp"
             echo "$f $ts" >> "$TIME_DB.tmp"
             mv -f "$TIME_DB.tmp" "$TIME_DB"
-            echo "::notice title=已追加::$f"
         fi
     done
 
-    # --------------------------
-    # 第二类：只修改已有项，不追加
-    # --------------------------
-    for f in "${TARGET_MODIFY_ONLY[@]}"; do
+    # ======================================
+    # 第二个：只改已有，没有就跳过
+    # ======================================
+    for f in "${TARGET_MODIFY_EXISTING[@]}"; do
         [ -f "$f" ] || continue
-        ts=$(stat -c "%Y" "$f" 2>/dev/null)
-        [ -z "$ts" ] && continue
-        old_ts=$(awk -v f="$f" '$1==f{print $2}' "$TIME_DB" 2>/dev/null)
-        old_ts=${old_ts:-0}
+        ts=$(stat -c "%Y" "$f" 2>/dev/null || echo 0)
+        old_ts=$(awk -v f="$f" '$1==f{print $2}' "$TIME_DB" 2>/dev/null || echo 0)
 
         if [ "$ts" -gt "$old_ts" ]; then
-            ((COUNT++))
-
             # 版本号
-            sed -i "s|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"$NEW_VERSION\"|" "$f"
+            if grep -q "^CONFIG_LOCALVERSION=" "$f"; then
+                sed -i "s|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"$NEW_VERSION\"|" "$f"
+            fi
 
-            # 开启项：只替换已有的
+            # 开
             for c in "${ENABLE[@]}"; do
-                sed -i "s|^CONFIG_$c=.*|CONFIG_$c=y|" "$f"
+                if grep -q "^CONFIG_$c=" "$f" || grep -q "^# CONFIG_$c is not set" "$f"; then
+                    sed -i "s|^CONFIG_$c=.*|CONFIG_$c=y|" "$f"
+                    sed -i "s|^# CONFIG_$c is not set|CONFIG_$c=y|" "$f"
+                fi
             done
 
-            # 关闭项：只替换已有的
+            # 关
             for c in "${CONFIGS[@]}"; do
-                sed -i "s|^CONFIG_$c=.*|# CONFIG_$c is not set|" "$f"
+                if grep -q "^CONFIG_$c=" "$f" || grep -q "^# CONFIG_$c is not set" "$f"; then
+                    sed -i "s|^CONFIG_$c=.*|# CONFIG_$c is not set|" "$f"
+                    sed -i "s|^# CONFIG_$c is not set|# CONFIG_$c is not set|" "$f"
+                fi
             done
 
             sync "$f"
             awk -v f="$f" -v ts="$ts" '$1!=f' "$TIME_DB" > "$TIME_DB.tmp"
             echo "$f $ts" >> "$TIME_DB.tmp"
             mv -f "$TIME_DB.tmp" "$TIME_DB"
-            echo "::notice title=仅修改已有配置::$f"
         fi
     done
 
