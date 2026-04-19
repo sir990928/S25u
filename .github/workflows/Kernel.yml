@@ -22,45 +22,43 @@ jobs:
         run: |
           cd kernel_platform/common
           
-          # 1. 注入 SukiSU-Ultra
+          # 1. 注入 SukiSU-Ultra (维持你原有的 builtin 注入)
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           
           # 2. 获取 SUSFS 源码
           git clone --depth=1 -b gki-android15-6.6-dev https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
           
-          # 3. 物理搬运核心文件
+          # 3. 物理搬运 (西蒙朋克官方文档要求步骤)
           cp /tmp/susfs/kernel_patches/fs/susfs.c ./fs/
           cp /tmp/susfs/kernel_patches/include/linux/susfs.h ./include/linux/
           cp /tmp/susfs/kernel_patches/include/linux/susfs_def.h ./include/linux/
           
-          # 4. 【核心修复】关联头文件到精准物理路径
-          # 确认路径为：KernelSU/kernel/ksu.c
-          KSU_FILE="KernelSU/kernel/ksu.c"
-          if [ -f "$KSU_FILE" ]; then
-              echo "✅ 成功定位 ksu.c，正在注入挂钩逻辑..."
-              sed -i '1i #include <linux/susfs.h>' "$KSU_FILE"
-          else
-              echo "❌ 错误：未找到 $KSU_FILE，请检查 tree 结构！"
-              exit 1
-          fi
-
-          # 5. 【6.6 内核专项修复】解决 current_uid().val 未定义报错
-          sed -i '1i #include <linux/cred.h>\n#include <linux/uidgid.h>' ./include/linux/susfs_def.h
-
-          # 6. 【6.6 内核专项修复】将 Werror 降级，绕过 signal 数组越界拦截
-          find . -name "Makefile" -type f -exec sed -i 's/-Werror/-Wno-error/g' {} +
-
-          # 7. 应用 6.6 官方内核补丁 (修改 fs/open.c 等)
+          # 4. 【核心钩子】应用 10_enable 补丁到 KernelSU 目录 (让 KSU 支持 SUSFS)
+          # 路径已根据你的 tree 确认为 KernelSU/
+          cd KernelSU && patch -p1 < /tmp/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch && cd ..
+          
+          # 5. 【核心钩子】应用 50_add 补丁到 common 目录 (让内核核心支持隐藏)
           patch -p1 < /tmp/susfs/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch
 
-          # 8. 注册编译目标
+          # 6. 关联头文件到 ksu.c (物理路径修正)
+          if [ -f "KernelSU/kernel/ksu.c" ]; then
+              sed -i '1i #include <linux/susfs.h>' KernelSU/kernel/ksu.c
+          fi
+
+          # 7. 修复 6.6 报错 (current_uid 定义问题)
+          sed -i '1i #include <linux/cred.h>\n#include <linux/uidgid.h>' ./include/linux/susfs_def.h
+
+          # 8. 屏蔽 Werror (防止 S25U 6.6 编译器因数组警告拦截编译)
+          find . -name "Makefile" -type f -exec sed -i 's/-Werror/-Wno-error/g' {} +
+
+          # 9. 注册编译目标
           if ! grep -q "susfs.o" fs/Makefile; then
               echo "obj-y += susfs.o" >> fs/Makefile
           fi
 
-          # 9. 移除 ABI 保护
+          # 10. 移除 ABI 保护 (文档明确要求 Android 15 必须删除，否则 WiFi 必炸)
           rm -f android/abi_gki_protected_exports_*
-          echo "✅ 注入与 6.6 内核适配完成"
+          echo "✅ 注入完成"
 
       - name: 🏗️ 后台劫持与前台编译
         run: |
