@@ -6,8 +6,12 @@ TARGETS=(
     "kernel_platform/bazel-cache/*/execroot/_main/bazel-out/k8-fastbuild/bin/msm-kernel/sun_perf_config/out_dir/.config"
 )
 
-# --- 2. 手术清单 (已补全 SUSFS 新版所有选项) ---
-CONFIGS=("KNOX_NCM" "SEC_RESTRICT_FORK" "SEC_RESTRICT_ROOTING" "UH" "RKP" "KDP" "LOCALVERSION_AUTO" "GAF" "FIVE" "PROCA" "INTEGRITY" "TRIM_UNUSED_KSYMS" "SECURITY_DEFEX")
+# --- 2. 手术清单 ---
+CONFIGS=(
+    "KNOX_NCM" "SEC_RESTRICT_FORK" "SEC_RESTRICT_ROOTING"
+    "UH" "RKP" "KDP" "LOCALVERSION_AUTO" "GAF" "FIVE" "PROCA"
+    "INTEGRITY" "TRIM_UNUSED_KSYMS" "SECURITY_DEFEX"
+)
 
 ENABLE=(
     "KSU" 
@@ -35,49 +39,55 @@ ENABLE=(
 
 NEW_VERSION="-SukiSU-Ultra"
 
-# --- 3. 引擎初始化 ---
+# --- 3. 引擎 ---
 TIME_DB="/tmp/.hijack_time_db"
 touch "$TIME_DB"
 COUNT=0
-export stdbuf -oL
 
-# 提前构建 Payload (真理块)
-PAYLOAD="\n# --- SUKISU HIJACK START ---\n"
-PAYLOAD+="CONFIG_LOCALVERSION=\"$NEW_VERSION\"\n"
-for cfg in "${ENABLE[@]}"; do PAYLOAD+="CONFIG_$cfg=y\n"; done
-for cfg in "${CONFIGS[@]}"; do PAYLOAD+="# CONFIG_$cfg is not set\n"; done
-PAYLOAD+="# --- SUKISU HIJACK END ---\n"
+# 一次性生成 PAYLOAD（更快更稳定）
+PAYLOAD=$(cat <<EOF
 
-# 构建一次性删除正则
-PATTERN=$(printf "|CONFIG_%s|# CONFIG_%s is not set" "${CONFIGS[@]}" "${ENABLE[@]}" "${CONFIGS[@]}" "${ENABLE[@]}")
-PATTERN="^(${PATTERN:1}|CONFIG_LOCALVERSION=)"
+# --- SUKISU HIJACK START ---
+CONFIG_LOCALVERSION="${NEW_VERSION}"
+$(for cfg in "${ENABLE[@]}"; do echo "CONFIG_$cfg=y"; done)
+$(for cfg in "${CONFIGS[@]}"; do echo "# CONFIG_$cfg is not set"; done)
+# --- SUKISU HIJACK END ---
+EOF
+)
 
-echo "🚀 [$(date +%T)] 劫持引擎点火：全量覆盖模式 (支持 SUSFS v1.5.x+)"
+# 构建正确的单行正则，一次删除所有旧配置
+ALL_SYMS=("${CONFIGS[@]}" "${ENABLE[@]}")
+PATTERN="^CONFIG_LOCALVERSION=.*"
+for s in "${ALL_SYMS[@]}"; do
+    PATTERN+="|^CONFIG_$s=.*|^# CONFIG_$s is not set"
+done
+
+echo "🚀 [$(date +%T)] 劫持引擎点火：全量覆盖模式"
 
 while true; do
   for f in ${TARGETS[@]}; do
     [ ! -f "$f" ] && continue
-    
+
     ts=$(stat -c "%Y" "$f" 2>/dev/null)
     [ -z "$ts" ] && continue
-    
-    old_ts=$(grep "^$f " "$TIME_DB" 2>/dev/null | awk '{print $2}')
+
+    old_ts=$(awk -v f="$f" '$1 == f {print $2}' "$TIME_DB" 2>/dev/null)
     old_ts=${old_ts:-0}
 
     if [ "$ts" -gt "$old_ts" ]; then
       ((COUNT++))
 
-      # 原子操作：先删后追
-      sed -i -E "/$PATTERN/d" "$f"
-      printf "$PAYLOAD" >> "$f"
+      # 一次删除，一次写入，极快，无重复
+      sed -i -E "/($PATTERN)/d" "$f"
+      echo -e "$PAYLOAD" >> "$f"
       sync "$f"
 
-      # 更新数据库
+      # 更新时间戳
       new_ts=$(stat -c "%Y" "$f" 2>/dev/null)
-      grep -v "^$f " "$TIME_DB" > "$TIME_DB.tmp" 2>/dev/null || true
-      echo "$f ${new_ts:-$ts}" >> "$TIME_DB.tmp"
+      awk -v f="$f" -v ts="${new_ts:-$ts}" '$1 != f' "$TIME_DB" > "$TIME_DB.tmp"
+      echo "$f $ts" >> "$TIME_DB.tmp"
       mv -f "$TIME_DB.tmp" "$TIME_DB"
-      
+
       echo "::notice title=劫持成功::已注入 $f (第 $COUNT 次)"
       echo "💎 [$(date +%T)] 修改完成：$f"
     fi
