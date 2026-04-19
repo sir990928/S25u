@@ -1,4 +1,4 @@
-name: "S25U-SukiSU-Final-Triple-Upload"
+name: "S25U-SukiSU-Ultra-Clean-NoSUSFS"
 
 on:
   push:
@@ -18,35 +18,36 @@ jobs:
           chmod +x ./build_kernel_GKI.sh
           chmod +x ./kernel_platform/build/kernel/build.config.sh || true
 
-      - name: 🧬 注入 SukiSU & SUSFS
+      - name: 🧬 注入 SukiSU-Ultra (不含 SUSFS)
         run: |
           cd kernel_platform/common
+          
+          # 1. 仅注入 SukiSU 核心
+          echo "🛠️ 注入 SukiSU 核心..."
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
-          git clone --depth=1 -b gki-android15-6.6-dev https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
-          cp /tmp/susfs/kernel_patches/fs/susfs.c ./fs/
-          cp /tmp/susfs/kernel_patches/include/linux/susfs.h ./include/linux/
-          cp /tmp/susfs/kernel_patches/include/linux/susfs_def.h ./include/linux/
-          grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
+          
+          # 2. 移除 ABI 保护 (WiFi 修复关键)
           rm -f android/abi_gki_protected_exports_*
+          echo "✅ SukiSU 注入完成，SUSFS 已彻底排除"
 
       - name: 🏗️ 后台劫持与前台编译
         run: |
-          # 启动后台引擎 (静默模式，防止日志重影)
+          # 启动后台引擎 (确保你的 build.config.sh 里没有 SUSFS 的 CONFIG)
           nohup sudo ./kernel_platform/build/kernel/build.config.sh > /dev/null 2>&1 &
           HIJACK_PID=$!
           
-          # 执行编译
+          # 执行唯一编译进程
           export LOCALVERSION=""
           yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
           
           kill $HIJACK_PID || true
 
-      - name: 🛠️ 产物提取与合成 (Image + DTBO)
+      - name: 🛠️ 产物提取与合成 (仅 Image + DTBO)
         if: always()
         run: |
           mkdir -p final_artifacts
           
-          # 1. 你的 DTBO 合并逻辑 (扫 out 和 drivers)
+          # 1. DTBO 合并逻辑
           mkdir -p dtbo_work
           declare -A seen_hashes
           find out drivers -name "*.dtbo" -type f 2>/dev/null | while read -r dtbo_file; do
@@ -57,7 +58,6 @@ jobs:
               fi
           done
           
-          # 合成
           if [ -d "dtbo_work" ] && [ "$(ls -A dtbo_work)" ]; then
               ./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg create dtbo.img dtbo_work/*.dtbo || true
           fi
@@ -68,35 +68,35 @@ jobs:
               git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 ak3_pack
               cp "$GLOBAL_IMAGE" ak3_pack/
               [ -f "dtbo.img" ] && cp dtbo.img ak3_pack/
-              cd ak3_pack && zip -r9 ../final_artifacts/S25U-Flashable.zip ./* && cd ..
+              cd ak3_pack && zip -r9 ../final_artifacts/S25U-Flashable-NoSUSFS.zip ./* && cd ..
           fi
 
-      - name: 📤 上传卡刷包 (Flashable Zip)
+      - name: 📤 分开上传：卡刷包
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25U-Flashable-Kernel
-          path: final_artifacts/S25U-Flashable.zip
+          name: S25U-Flashable-NoSUSFS
+          path: final_artifacts/S25U-Flashable-NoSUSFS.zip
 
-      - name: 📤 连根拔起：上传全量 out 目录
+      - name: 📤 连根拔起：上传全量 out
         if: always()
-        run: zip -r1 out_full_root.zip out/
+        run: zip -r1 out_full.zip out/
       
-      - name: 🚀 上传 out_full_root.zip
+      - name: 🚀 上传 out
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25U-Root-Out-Folder
-          path: out_full_root.zip
+          name: S25U-Root-Out
+          path: out_full.zip
 
-      - name: 📤 连根拔起：上传全量 drivers 目录
+      - name: 📤 连根拔起：上传全量 drivers
         if: always()
-        run: zip -r1 drivers_full_root.zip drivers/
+        run: zip -r1 drivers_full.zip drivers/
 
-      - name: 🚀 上传 drivers_full_root.zip
+      - name: 🚀 上传 drivers
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25U-Root-Drivers-Folder
-          path: drivers_full_root.zip
+          name: S25U-Root-Drivers
+          path: drivers_full.zip
 
