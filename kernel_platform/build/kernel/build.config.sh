@@ -44,25 +44,18 @@ TIME_DB="/tmp/.hijack_time_db"
 touch "$TIME_DB"
 COUNT=0
 
-# 一次性生成 PAYLOAD（更快更稳定）
+# 一次性构建最终覆盖块
 PAYLOAD=$(cat <<EOF
 
-# --- SUKISU HIJACK START ---
+# --- SUKISU HIJACK FINAL OVERRIDE ---
 CONFIG_LOCALVERSION="${NEW_VERSION}"
-$(for cfg in "${ENABLE[@]}"; do echo "CONFIG_$cfg=y"; done)
-$(for cfg in "${CONFIGS[@]}"; do echo "# CONFIG_$cfg is not set"; done)
-# --- SUKISU HIJACK END ---
+$(for c in "${ENABLE[@]}"; do echo "CONFIG_$c=y"; done)
+$(for c in "${CONFIGS[@]}"; do echo "# CONFIG_$c is not set"; done)
+# --- END SUKISU ---
 EOF
 )
 
-# 构建正确的单行正则，一次删除所有旧配置
-ALL_SYMS=("${CONFIGS[@]}" "${ENABLE[@]}")
-PATTERN="^CONFIG_LOCALVERSION=.*"
-for s in "${ALL_SYMS[@]}"; do
-    PATTERN+="|^CONFIG_$s=.*|^# CONFIG_$s is not set"
-done
-
-echo "🚀 [$(date +%T)] 劫持引擎点火：全量覆盖模式"
+echo "🚀 [$(date +%T)] 极速劫持：只追加不删除，靠后覆盖优先"
 
 while true; do
   for f in ${TARGETS[@]}; do
@@ -71,25 +64,22 @@ while true; do
     ts=$(stat -c "%Y" "$f" 2>/dev/null)
     [ -z "$ts" ] && continue
 
-    old_ts=$(awk -v f="$f" '$1 == f {print $2}' "$TIME_DB" 2>/dev/null)
+    old_ts=$(awk -v f="$f" '$1==f{print $2}' "$TIME_DB" 2>/dev/null)
     old_ts=${old_ts:-0}
 
     if [ "$ts" -gt "$old_ts" ]; then
       ((COUNT++))
 
-      # 一次删除，一次写入，极快，无重复
-      sed -i -E "/($PATTERN)/d" "$f"
-      echo -e "$PAYLOAD" >> "$f"
+      # 🔥 核心：只追加，不删除，一次写入，速度拉满
+      echo "$PAYLOAD" >> "$f"
       sync "$f"
 
       # 更新时间戳
-      new_ts=$(stat -c "%Y" "$f" 2>/dev/null)
-      awk -v f="$f" -v ts="${new_ts:-$ts}" '$1 != f' "$TIME_DB" > "$TIME_DB.tmp"
+      awk -v f="$f" -v ts="$ts" '$1!=f' "$TIME_DB" > "$TIME_DB.tmp"
       echo "$f $ts" >> "$TIME_DB.tmp"
       mv -f "$TIME_DB.tmp" "$TIME_DB"
 
-      echo "::notice title=劫持成功::已注入 $f (第 $COUNT 次)"
-      echo "💎 [$(date +%T)] 修改完成：$f"
+      echo "::notice title=极速注入::$f (第 $COUNT 次)"
     fi
   done
   sleep 0.1
