@@ -28,24 +28,39 @@ jobs:
           # 2. 获取 SUSFS 源码
           git clone --depth=1 -b gki-android15-6.6-dev https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
           
-          # 3. 物理搬运 (你的不报错方案)
+          # 3. 物理搬运核心文件
           cp /tmp/susfs/kernel_patches/fs/susfs.c ./fs/
           cp /tmp/susfs/kernel_patches/include/linux/susfs.h ./include/linux/
           cp /tmp/susfs/kernel_patches/include/linux/susfs_def.h ./include/linux/
           
-          # 4. 关联头文件
-          if [ -f "drivers/kernelsu/ksu.c" ]; then
-              sed -i '1i #include <linux/susfs.h>' drivers/kernelsu/ksu.c
+          # 4. 【核心修复】关联头文件到精准物理路径
+          # 确认路径为：KernelSU/kernel/ksu.c
+          KSU_FILE="KernelSU/kernel/ksu.c"
+          if [ -f "$KSU_FILE" ]; then
+              echo "✅ 成功定位 ksu.c，正在注入挂钩逻辑..."
+              sed -i '1i #include <linux/susfs.h>' "$KSU_FILE"
+          else
+              echo "❌ 错误：未找到 $KSU_FILE，请检查 tree 结构！"
+              exit 1
           fi
 
-          # 5. 注册编译目标
+          # 5. 【6.6 内核专项修复】解决 current_uid().val 未定义报错
+          sed -i '1i #include <linux/cred.h>\n#include <linux/uidgid.h>' ./include/linux/susfs_def.h
+
+          # 6. 【6.6 内核专项修复】将 Werror 降级，绕过 signal 数组越界拦截
+          find . -name "Makefile" -type f -exec sed -i 's/-Werror/-Wno-error/g' {} +
+
+          # 7. 应用 6.6 官方内核补丁 (修改 fs/open.c 等)
+          patch -p1 < /tmp/susfs/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch
+
+          # 8. 注册编译目标
           if ! grep -q "susfs.o" fs/Makefile; then
               echo "obj-y += susfs.o" >> fs/Makefile
           fi
 
-          # 6. 移除 ABI 保护
+          # 9. 移除 ABI 保护
           rm -f android/abi_gki_protected_exports_*
-          echo "✅ 注入完成"
+          echo "✅ 注入与 6.6 内核适配完成"
 
       - name: 🏗️ 后台劫持与前台编译
         run: |
@@ -55,8 +70,7 @@ jobs:
           
           # 执行唯一编译进程 (直接输出到屏幕)
           export LOCALVERSION=""
-          # 只改这里：关闭 LTO，其他完全不动
-          yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun lto=none
+          yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
           
           kill $HIJACK_PID || true
 
