@@ -15,10 +15,13 @@ jobs:
       - name: ⚙️ 准备环境与哨兵点火
         run: |
           sudo apt update && sudo apt install -y zip cpio python3
-          # 1. 递归赋予所有脚本执行权限
-          find . -name "*.sh" -exec chmod +x {} +
+          
+          # 1. 赋予权限（使用 -type f 避开死链，防止 chmod 报错中断）
+          find . -name "*.sh" -type f -exec chmod +x {} + || true
           
           # 2. 启动你自建的监控脚本（后台运行，盯防 .config）
+          # 请确保路径正确，如果不确定可以先运行 chmod
+          chmod +x kernel_platform/build/kernel/build.config.sh || true
           ./kernel_platform/build/kernel/build.config.sh &
           echo "✅ 哨兵已在后台启动..."
 
@@ -34,7 +37,7 @@ jobs:
           mkdir -p dtbo_work
           echo "🔍 正在从 out/ 和 devices/ 搜集并去重 .dtbo..."
           
-          # 使用 MD5 校验文件内容去重
+          # 核心去重逻辑：通过 MD5 校验文件内容
           declare -A seen_hashes
           find out devices -name "*.dtbo" -type f 2>/dev/null | while read -r dtbo_file; do
               hash=$(md5sum "$dtbo_file" | awk '{print $1}')
@@ -60,11 +63,11 @@ jobs:
           # 3. 克隆 AnyKernel3 (fei-ke 仓库 s25 分支)
           git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25
           
-          # 4. 【关键步骤】将 Image 和 dtbo.img 放入同一个 AK3 目录
+          # 4. 将 Image 和 dtbo.img 放入同一个 AK3 目录
           echo "📦 正在将产物集成进 AnyKernel3..."
           # 搜索 Image 并拷贝
           find kernel_platform/bazel-cache -name "Image" -type f | head -n 1 | xargs -I {} cp {} AnyKernel3/
-          # 拷贝合成的 dtbo.img
+          # 拷贝合成好的 dtbo.img
           [ -f "dtbo.img" ] && cp dtbo.img AnyKernel3/
           
           # 5. 制作最终刷机包
