@@ -6,32 +6,53 @@ TARGETS=(
     "kernel_platform/bazel-cache/*/execroot/_main/bazel-out/k8-fastbuild/bin/msm-kernel/sun_perf_config/out_dir/.config"
 )
 
-# --- 2. 手术清单 ---
+# --- 2. 手术清单 (已补全 SUSFS 新版所有选项) ---
 CONFIGS=("KNOX_NCM" "SEC_RESTRICT_FORK" "SEC_RESTRICT_ROOTING" "UH" "RKP" "KDP" "LOCALVERSION_AUTO" "GAF" "FIVE" "PROCA" "INTEGRITY" "TRIM_UNUSED_KSYMS" "SECURITY_DEFEX")
-ENABLE=("KSU" "KSU_SUSFS" "KSU_SUSFS_SUS_MOUNT" "KSU_SUSFS_SUS_PATH" "KSU_SUSFS_HAS_KSU_SUSFS" "KSU_SUSFS_SUS_MEMFD" "KSU_SUSFS_SUS_KSTAT" "KSU_SUSFS_TRY_UMUNT" "KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT" "KPM" "KPROBES" "KPROBE_EVENTS" "HAVE_KPROBES" "CPU_FREQ_GOV_PERFORMANCE" "CPU_FREQ_GOV_USERSPACE")
+
+ENABLE=(
+    "KSU" 
+    "KSU_SUSFS" 
+    "KSU_SUSFS_SUS_MOUNT" 
+    "KSU_SUSFS_SUS_PATH" 
+    "KSU_SUSFS_HAS_KSU_SUSFS" 
+    "KSU_SUSFS_SUS_MEMFD" 
+    "KSU_SUSFS_SUS_KSTAT" 
+    "KSU_SUSFS_TRY_UMUNT" 
+    "KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT" 
+    "KSU_SUSFS_SPOOF_UNAME" 
+    "KSU_SUSFS_ENABLE_LOG" 
+    "KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS" 
+    "KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG" 
+    "KSU_SUSFS_OPEN_REDIRECT" 
+    "KSU_SUSFS_SUS_MAP" 
+    "KPM" 
+    "KPROBES" 
+    "KPROBE_EVENTS" 
+    "HAVE_KPROBES" 
+    "CPU_FREQ_GOV_PERFORMANCE" 
+    "CPU_FREQ_GOV_USERSPACE"
+)
+
 NEW_VERSION="-SukiSU-Ultra"
 
-# 初始化数据库
+# --- 3. 引擎初始化 ---
 TIME_DB="/tmp/.hijack_time_db"
 touch "$TIME_DB"
 COUNT=0
-
-# 强制行缓冲
 export stdbuf -oL
 
-# 提前构建真理块（Payload），减少循环内的计算
+# 提前构建 Payload (真理块)
 PAYLOAD="\n# --- SUKISU HIJACK START ---\n"
 PAYLOAD+="CONFIG_LOCALVERSION=\"$NEW_VERSION\"\n"
 for cfg in "${ENABLE[@]}"; do PAYLOAD+="CONFIG_$cfg=y\n"; done
 for cfg in "${CONFIGS[@]}"; do PAYLOAD+="# CONFIG_$cfg is not set\n"; done
 PAYLOAD+="# --- SUKISU HIJACK END ---\n"
 
-# 构建删除正则（一次性删除所有相关项）
-# 匹配所有以 CONFIG_ 开头且在清单中的项，或者已经被注释掉的项
+# 构建一次性删除正则
 PATTERN=$(printf "|CONFIG_%s|# CONFIG_%s is not set" "${CONFIGS[@]}" "${ENABLE[@]}" "${CONFIGS[@]}" "${ENABLE[@]}")
 PATTERN="^(${PATTERN:1}|CONFIG_LOCALVERSION=)"
 
-echo "🚀 [$(date +%T)] 劫持引擎点火：全量原子覆盖模式 (0.1s 采样)"
+echo "🚀 [$(date +%T)] 劫持引擎点火：全量覆盖模式 (支持 SUSFS v1.5.x+)"
 
 while true; do
   for f in ${TARGETS[@]}; do
@@ -46,14 +67,9 @@ while true; do
     if [ "$ts" -gt "$old_ts" ]; then
       ((COUNT++))
 
-      # --- 核心原子手术 ---
-      # 1. 使用极速正则删除所有干扰行
+      # 原子操作：先删后追
       sed -i -E "/$PATTERN/d" "$f"
-
-      # 2. 瞬间追加全量配置块
       printf "$PAYLOAD" >> "$f"
-      
-      # 3. 强行冲刷磁盘缓存，确保护送给 Bazel
       sync "$f"
 
       # 更新数据库
@@ -62,8 +78,8 @@ while true; do
       echo "$f ${new_ts:-$ts}" >> "$TIME_DB.tmp"
       mv -f "$TIME_DB.tmp" "$TIME_DB"
       
-      echo "::notice title=暴力劫持成功::已在 $f 完成第 $COUNT 次全量手术"
-      echo "💎 [$(date +%T)] 瞬间覆盖完成：$f"
+      echo "::notice title=劫持成功::已注入 $f (第 $COUNT 次)"
+      echo "💎 [$(date +%T)] 修改完成：$f"
     fi
   done
   sleep 0.1
