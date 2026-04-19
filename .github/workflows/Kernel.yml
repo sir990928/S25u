@@ -18,17 +18,36 @@ jobs:
           chmod +x kernel_platform/build/kernel/build.config.sh || true
           touch hijack.log && chmod 666 hijack.log
 
-      - name: 🧬 注入 SukiSU-Ultra & 手动补入 SUSFS (6.6)
+      - name: 🧬 注入 SukiSU-Ultra & 手动补入 SUSFS (6.6 路径适配版)
         run: |
           cd kernel_platform/common
+          
+          # 1. 注入 SukiSU-Ultra 核心
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           
+          # 2. 拉取 SUSFS 源码 (指定 6.6 分支或最新版)
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
-          cp /tmp/susfs/kernel/drivers/susfs.c drivers/kernelsu/
-          cp /tmp/susfs/kernel/include/linux/susfs.h include/linux/
+          
+          # 3. 【核心修复】自动定位并拷贝，防止路径写死报错
+          echo "🔍 正在自动搜索 SUSFS 核心组件..."
+          find /tmp/susfs -name "susfs.c" -exec cp {} drivers/kernelsu/ \;
+          find /tmp/susfs -name "susfs.h" -exec cp {} include/linux/ \;
+          
+          # 检查文件是否到位
+          if [ -f "drivers/kernelsu/susfs.c" ] && [ -f "include/linux/susfs.h" ]; then
+              echo "✅ SUSFS 组件已就绪"
+          else
+              echo "❌ 依然找不到 SUSFS 文件，尝试备用路径..."
+              # 某些版本可能在 fs 目录下
+              find /tmp/susfs -name "susfs.c" | head -n 1 | xargs -I {} cp {} drivers/kernelsu/
+              find /tmp/susfs -name "susfs.h" | head -n 1 | xargs -I {} cp {} include/linux/
+          fi
+          
+          # 4. 注册 SUSFS 并优化符号表
+          sed -i '/susfs.o/d' drivers/kernelsu/Makefile
           echo "obj-y += susfs.o" >> drivers/kernelsu/Makefile
           echo "KBUILD_CFLAGS += -fno-optimize-sibling-calls" >> Makefile
-          echo "✅ SukiSU 与 SUSFS 源码注入完成"
+          echo "✅ 源码层注入彻底完成"
 
       - name: 🛰️ 启动后台劫持引擎
         run: |
@@ -59,7 +78,6 @@ jobs:
       - name: 🛠️ 全局搜寻产物并连根拔起打包
         if: success()
         run: |
-          # 1. 提取唯一 DTBO 并合成
           mkdir -p dtbo_work
           echo "🔍 正在从 out/ 和 drivers/ 提取唯一 DTBO..."
           find out drivers -name "*.dtbo" -type f 2>/dev/null | while read -r dtbo_file; do
@@ -71,25 +89,17 @@ jobs:
           done
           ./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg create dtbo.img dtbo_work/*.dtbo || true
           
-          # 2. 【核心要求】从根目录全局寻找 Image
-          echo "🔍 正在根目录全局搜寻内核 Image..."
-          # 排除 AnyKernel 目录和不需要的架构，锁定 sun_perf 编译出的 Image
+          echo "🔍 全局搜寻 Image..."
           GLOBAL_IMAGE=$(find . -name "Image" -type f | grep "sun_perf" | head -n 1)
-          if [ -z "$GLOBAL_IMAGE" ]; then
-              echo "⚠️ 未找到特定 Image，尝试通用搜索..."
-              GLOBAL_IMAGE=$(find . -name "Image" -type f | grep -v "AnyKernel" | head -n 1)
-          fi
-          echo "🎯 锁定 Image 路径: $GLOBAL_IMAGE"
-
-          # 3. 制作 AnyKernel3 刷机包
+          [ -z "$GLOBAL_IMAGE" ] && GLOBAL_IMAGE=$(find . -name "Image" -type f | grep -v "AnyKernel" | head -n 1)
+          
           git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 ak3_pack
           [ -n "$GLOBAL_IMAGE" ] && cp "$GLOBAL_IMAGE" ak3_pack/
           [ -f "dtbo.img" ] && cp dtbo.img ak3_pack/
           cd ak3_pack && zip -r9 ../S25U-SukiSU-Kernel-Flashable.zip ./*
           cd ..
 
-          # 4. 【连根拔起】全量归档
-          echo "📦 正在连根拔起打包 out/ 和 drivers/ ..."
+          echo "📦 全量归档 out/ 和 drivers/ ..."
           [ -d "out" ] && zip -r9 out_full_archive.zip out/
           [ -d "drivers" ] && zip -r9 drivers_full_archive.zip drivers/
 
@@ -108,4 +118,3 @@ jobs:
         with:
           name: S25U-SukiSU-Ultra-Global-Pack
           path: final_artifacts/
-
