@@ -28,25 +28,26 @@ jobs:
           # 2. 拉取 SUSFS 源码 (指定 6.6 分支或最新版)
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
           
-          # 3. 【核心修复】自动定位并拷贝，防止路径写死报错
+          # 3. 【精准修复】自动定位并拷贝，补齐缺失的 susfs_def.h
           echo "🔍 正在自动搜索 SUSFS 核心组件..."
           find /tmp/susfs -name "susfs.c" -exec cp {} drivers/kernelsu/ \;
+          find /tmp/susfs -name "susfs_def.h" -exec cp {} include/linux/ \;
           find /tmp/susfs -name "susfs.h" -exec cp {} include/linux/ \;
           
-          # 检查文件是否到位
-          if [ -f "drivers/kernelsu/susfs.c" ] && [ -f "include/linux/susfs.h" ]; then
-              echo "✅ SUSFS 组件已就绪"
-          else
-              echo "❌ 依然找不到 SUSFS 文件，尝试备用路径..."
-              # 某些版本可能在 fs 目录下
-              find /tmp/susfs -name "susfs.c" | head -n 1 | xargs -I {} cp {} drivers/kernelsu/
-              find /tmp/susfs -name "susfs.h" | head -n 1 | xargs -I {} cp {} include/linux/
-          fi
+          # 4. 【补丁注入】必须应用 Patch 才能让内核 fs 层识别 SUSFS
+          echo "🩹 正在应用 SUSFS 内核补丁..."
+          SUSFS_PATCH=$(find /tmp/susfs -name "*6.6*gki*.patch" | head -n 1)
+          [ -f "$SUSFS_PATCH" ] && patch -p1 < "$SUSFS_PATCH" || echo "⚠️ 未找到匹配补丁"
           
-          # 4. 注册 SUSFS 并优化符号表
+          # 5. 注册 SUSFS 并优化符号表
           sed -i '/susfs.o/d' drivers/kernelsu/Makefile
           echo "obj-y += susfs.o" >> drivers/kernelsu/Makefile
           echo "KBUILD_CFLAGS += -fno-optimize-sibling-calls" >> Makefile
+          
+          # 6. 【关键挂载】注册 Kconfig 户口，防止 CONFIG_KSU 被自动删除
+          if ! grep -q "kernelsu" drivers/Kconfig; then
+              sed -i '$a source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          fi
           echo "✅ 源码层注入彻底完成"
 
       - name: 🛰️ 启动后台劫持引擎
@@ -90,7 +91,7 @@ jobs:
           ./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg create dtbo.img dtbo_work/*.dtbo || true
           
           echo "🔍 全局搜寻 Image..."
-          GLOBAL_IMAGE=$(find . -name "Image" -type f | grep "sun_perf" | head -n 1)
+          GLOBAL_IMAGE=$(find out -name "Image" | grep "sun_perf" | head -n 1)
           [ -z "$GLOBAL_IMAGE" ] && GLOBAL_IMAGE=$(find . -name "Image" -type f | grep -v "AnyKernel" | head -n 1)
           
           git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 ak3_pack
@@ -118,3 +119,4 @@ jobs:
         with:
           name: S25U-SukiSU-Ultra-Global-Pack
           path: final_artifacts/
+
