@@ -1,4 +1,4 @@
-name: "S25U-SukiSU-Ultra-6.6-Final"
+name: "S25U-SukiSU-Ultra-6.6-Full-Archive"
 
 on:
   push:
@@ -15,89 +15,74 @@ jobs:
       - name: ⚙️ 准备环境
         run: |
           sudo apt update && sudo apt install -y zip cpio python3 inotify-tools patch
-          # 给予脚本执行权限
           chmod +x ./build_kernel_GKI.sh
           chmod +x ./kernel_platform/build/kernel/build.config.sh || true
-          # 预创建日志文件
           touch hijack.log && chmod 666 hijack.log
 
-      - name: 🧬 注入 SukiSU-Ultra & SUSFS 源码 (精准适配)
+      - name: 🧬 注入 SukiSU-Ultra & SUSFS 源码
         run: |
           cd kernel_platform/common
-          
-          # 1. 注入 SukiSU 核心
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
-          
-          # 2. 克隆 SUSFS gki-android15-6.6-dev 分支
           git clone --depth=1 -b gki-android15-6.6-dev https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
-          
-          # 3. 搬运核心物理文件
           cp /tmp/susfs/kernel_patches/fs/susfs.c ./fs/
           cp /tmp/susfs/kernel_patches/include/linux/susfs.h ./include/linux/
           cp /tmp/susfs/kernel_patches/include/linux/susfs_def.h ./include/linux/
-          
-          # 4. 应用补丁 (如果补丁已手动合入可忽略报错)
-          cd drivers/kernelsu && patch -p1 < /tmp/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || echo "KSU Patch Skip"
-          cd ../../ && patch -p1 < /tmp/susfs/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch || echo "Core Patch Skip"
-          
-          # 5. 注册编译目标
+          cd drivers/kernelsu && patch -p1 < /tmp/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+          cd ../../ && patch -p1 < /tmp/susfs/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch || true
           grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
-          
-          # 6. 移除 ABI 保护
           rm -f android/abi_gki_protected_exports_*
-          echo "✅ 注入流程已全部对齐"
 
       - name: 🛰️ 启动后台劫持引擎
         run: |
-          # 使用 nohup 确保后台进程不会随当前 shell 退出而消失
-          # 使用 stdbuf 强制输出刷新到 hijack.log
+          # 确保你的劫持逻辑在 build.config.sh 中
           nohup sudo stdbuf -oL -eL ./kernel_platform/build/kernel/build.config.sh > hijack.log 2>&1 &
-          
-          # 验证进程是否存活
           sleep 3
-          if pgrep -f "build.config.sh" > /dev/null; then
-            echo "✅ 劫持引擎已在后台启动 (PID: $(pgrep -f "build.config.sh"))"
-          else
-            echo "❌ 劫持引擎启动失败！查看启动错误："
-            cat hijack.log
-            exit 1
-          fi
+          pgrep -f "build.config.sh" && echo "✅ 劫持引擎已就绪" || (cat hijack.log && exit 1)
 
-      - name: 🏗️ 执行内核编译 (实时监控劫持动态)
+      - name: 🏗️ 执行内核编译 (实时监控)
         run: |
-          # 启动后台监控：实时打印日志文件内容变动
           tail -f hijack.log &
           MONITOR_PID=$!
-          
           export LOCALVERSION=""
-          # 执行编译
-          # yes "" 防止脚本在编译过程中有交互式停顿
-          yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
-          
-          # 编译结束后杀死监控和后台劫持
+          yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun 2>&1 | tee -a hijack.log
           kill $MONITOR_PID || true
-          sudo pkill -f "build.config.sh" || true
 
-      - name: 🛠️ 提取并打包产物
-        if: success()
+      - name: 🛠️ 连根拔起：全量打包 out 与 drivers
+        if: always() # 即使编译失败也尝试打包，方便查错
         run: |
-          mkdir -p dtbo_work
-          find out drivers -name "*.dtbo" -type f | while read -r file; do
-              cp "$file" "dtbo_work/$(basename "$file")" 2>/dev/null || true
-          done
-          [ -f "kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg" ] && ./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg create dtbo.img dtbo_work/*.dtbo || true
+          echo "📦 正在全量归档核心目录..."
+          mkdir -p final_artifacts
           
+          # 1. 查找并打包 Image 和卡刷包 (常规产物)
           GLOBAL_IMAGE=$(find out -name "Image" | grep "sun_perf" | head -n 1)
-          git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 ak3_pack
-          [ -n "$GLOBAL_IMAGE" ] && cp "$GLOBAL_IMAGE" ak3_pack/
-          [ -f "dtbo.img" ] && cp dtbo.img ak3_pack/
-          cd ak3_pack && zip -r9 ../S25U-SukiSU-Kernel.zip ./*
+          if [ -n "$GLOBAL_IMAGE" ]; then
+              git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 ak3_pack
+              cp "$GLOBAL_IMAGE" ak3_pack/
+              cd ak3_pack && zip -r9 ../final_artifacts/S25U-SukiSU-Flashable.zip ./* && cd ..
+          fi
 
-      - name: 📤 上传最终结果
+          # 2. 【核心修复】连根拔起打包 out 目录
+          if [ -d "out" ]; then
+              echo "🗜️ 正在压缩 out 目录 (包含符号表和中间件)..."
+              # 使用快速压缩，避免 GKI 巨大的 out 目录导致超时
+              zip -r1 final_artifacts/out_full_root.zip out/
+          fi
+
+          # 3. 【核心修复】连根拔起打包 drivers 目录
+          if [ -d "kernel_platform/common/drivers" ]; then
+              echo "🗜️ 正在压缩 drivers 目录..."
+              zip -r1 final_artifacts/drivers_full_root.zip kernel_platform/common/drivers/
+          elif [ -d "drivers" ]; then
+              zip -r1 final_artifacts/drivers_full_root.zip drivers/
+          fi
+          
+          # 4. 捎带日志
+          cp hijack.log final_artifacts/ 2>/dev/null || true
+
+      - name: 📤 上传全量归档产物
         uses: actions/upload-artifact@v4
         with:
-          name: S25U-Final-Image
-          path: |
-            S25U-SukiSU-Kernel.zip
-            hijack.log
+          name: S25U-Full-Root-Archive
+          path: final_artifacts/
+          retention-days: 3 # 建议保留天数短一点，因为全量包非常大
 
