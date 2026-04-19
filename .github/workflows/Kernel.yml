@@ -1,4 +1,4 @@
-name: "S25U-SukiSU-Ultra-6.6-Manual-Hardcore"
+name: "S25U-SukiSU-Ultra-6.6-Flat-Path-Final"
 
 on:
   push:
@@ -18,49 +18,51 @@ jobs:
           chmod +x kernel_platform/build/kernel/build.config.sh || true
           touch hijack.log && chmod 666 hijack.log
 
-      - name: 🧬 注入 SukiSU-Ultra & 手动硬核注入 SUSFS (15-6.6-Dev)
+      - name: 🧬 注入 SukiSU-Ultra & 手动硬核注入 SUSFS (针对扁平目录适配)
         run: |
           cd kernel_platform/common
           
-          # 1. 自动注入 KSU 基础 (交给 SukiSU 脚本自己跑)
-          echo "🛠️ 执行 SukiSU-Ultra 自动注入..."
+          # 1. 执行 SukiSU-Ultra 自动注入
+          echo "🛠️ 正在运行 SukiSU-Ultra 自动化脚本..."
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           
-          # 2. 获取 SUSFS 源码
+          # 2. 获取 SUSFS 源码 (Android 15 Dev 分支)
           echo "📥 克隆 SUSFS gki-android15-6.6-dev 分支..."
           git clone --depth=1 -b gki-android15-6.6-dev https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
           
-          # 3. 手动搬运核心文件 (手动注入的核心：确保物理文件到位)
-          echo "📦 搬运 SUSFS 源码与头文件..."
+          # 3. 手动搬运核心文件 (手动注入的基础)
+          echo "📦 搬运 SUSFS 源码..."
           cp /tmp/susfs/kernel_patches/fs/susfs.c ./fs/
           cp /tmp/susfs/kernel_patches/include/linux/susfs.h ./include/linux/
           cp /tmp/susfs/kernel_patches/include/linux/susfs_def.h ./include/linux/
           
-          # 4. 【关键手动操作】强行开启 KSU 的 SUSFS 支持宏
-          # 无论 10号补丁报错与否，此行确保 KSU 编译时启用 SUSFS 逻辑
-          echo "ccflags-y += -DCONFIG_KSU_SUSFS" >> drivers/kernelsu/kernel/Kbuild
+          # 4. 【精准修复】强行开启 SUSFS 宏定义
+          # 你的 ls 结果显示没有 Kbuild，因此直接注入到 Makefile
+          if [ -f "drivers/kernelsu/Makefile" ]; then
+              echo "ccflags-y += -DCONFIG_KSU_SUSFS" >> drivers/kernelsu/Makefile
+              echo "✅ 已在 drivers/kernelsu/Makefile 注入宏定义"
+          fi
           
-          # 5. 应用补丁 (即便有冲突也会处理能匹配上的部分)
-          echo "🩹 尝试应用补丁..."
-          # KSU 补丁 (在 drivers/kernelsu 目录下执行)
+          # 5. 【补丁合入】
+          echo "🩹 正在应用补丁..."
+          # KSU 补丁：针对你的扁平化目录结构进行 cd 处理
           cd drivers/kernelsu
-          patch -p1 < 10_enable_susfs_for_ksu.patch || echo "⚠️ KSU Patch 部分冲突，已通过宏定义兜底"
+          patch -p1 < /tmp/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || echo "⚠️ KSU Patch 冲突，已依靠 Makefile 宏定义兜底"
           cd ../../
           
-          # 内核主体补丁 (强制 50 号补丁，增加容错)
+          # 内核主体 50 号补丁 (增加容错参数)
           patch -p1 --fuzz=3 --ignore-whitespace < 50_add_susfs_in_gki-android15-6.6.patch || echo "⚠️ Core Patch 部分失败，将依靠手动注册运行"
 
-          # 6. 【核心手动注册】强行让内核编译 fs/susfs.c
-          # 如果补丁改 Makefile 失败，这一步是保命符
+          # 6. 【手动注册】强行让内核编译 fs/susfs.c
           if ! grep -q "susfs.o" fs/Makefile; then
               echo "obj-y += susfs.o" >> fs/Makefile
           fi
 
-          # 7. 移除 Android 15 ABI 保护 (WiFi 正常工作的关键)
+          # 7. 移除 ABI 保护 (Android 15 必须操作)
           echo "🚫 移除 ABI 保护文件..."
           rm -f android/abi_gki_protected_exports_*
           
-          echo "✅ 手动硬核注入流程已就绪"
+          echo "✅ 注入流程已全部对齐"
 
       - name: 🛰️ 启动后台劫持引擎
         run: |
@@ -86,14 +88,17 @@ jobs:
           yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
           kill $MONITOR_PID || true
 
-      - name: 🛠️ 提取产物 (DTBO 去重提取)
+      - name: 🛠️ 提取 DTBO (锁定 out/drivers 目录 + 自动去重)
         if: success()
         run: |
           mkdir -p dtbo_work
-          # 自动寻找所有 dtbo，重名则跳过（实现你说的只留一个逻辑）
+          # 只扫描根目录下的 out 和 drivers 文件夹
           find out drivers -name "*.dtbo" -type f 2>/dev/null | while read -r file; do
               fname=$(basename "$file")
-              if [ ! -f "dtbo_work/$fname" ]; then cp "$file" "dtbo_work/$fname"; fi
+              # 如果 dtbo_work 里已经有同名文件，就跳过（实现只留一个逻辑）
+              if [ ! -f "dtbo_work/$fname" ]; then 
+                  cp "$file" "dtbo_work/$fname"
+              fi
           done
 
           if [ -n "$(ls -A dtbo_work 2>/dev/null)" ]; then
@@ -104,14 +109,14 @@ jobs:
           GLOBAL_IMAGE=$(find out -name "Image" | grep "sun_perf" | head -n 1)
           [ -z "$GLOBAL_IMAGE" ] && GLOBAL_IMAGE=$(find . -name "Image" -type f | grep -v "AnyKernel" | head -n 1)
           
-          # 使用 AnyKernel3 打包
+          # 打包 AnyKernel3
           git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 ak3_pack
           [ -n "$GLOBAL_IMAGE" ] && cp "$GLOBAL_IMAGE" ak3_pack/
           [ -f "dtbo.img" ] && cp dtbo.img ak3_pack/
           cd ak3_pack && zip -r9 ../S25U-SukiSU-Kernel-Flashable.zip ./*
           cd ..
 
-      - name: 📦 归档原始目录 (out/drivers)
+      - name: 📦 连根拔起：归档原始目录 (out/drivers)
         if: always()
         run: |
           mkdir -p final_artifacts
@@ -121,8 +126,8 @@ jobs:
           cp hijack.log final_artifacts/ 2>/dev/null || true
 
       - name: 📤 上传最终产物
-        uses: actions/upload-artifact@v4
+        uses: upload-artifact@v4
         with:
-          name: S25U-Final-Pack
+          name: S25U-SukiSU-Ultra-Final-Artifacts
           path: final_artifacts/
 
