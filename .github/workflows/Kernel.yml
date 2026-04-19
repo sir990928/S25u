@@ -1,4 +1,4 @@
-name: "S25U-SukiSU-Ultra-6.6-No-Patch-Clean"
+name: "S25U-SukiSU-Ultra-6.6-Final"
 
 on:
   push:
@@ -14,101 +14,90 @@ jobs:
 
       - name: ⚙️ 准备环境
         run: |
-          sudo apt update && sudo apt install -y zip cpio python3 inotify-tools
-          chmod +x kernel_platform/build/kernel/build.config.sh || true
-          # 初始化日志
-          touch hijack_engine.log hijack.log
-          chmod 666 hijack_engine.log hijack.log
+          sudo apt update && sudo apt install -y zip cpio python3 inotify-tools patch
+          # 给予脚本执行权限
+          chmod +x ./build_kernel_GKI.sh
+          chmod +x ./kernel_platform/build/kernel/build.config.sh || true
+          # 预创建日志文件
+          touch hijack.log && chmod 666 hijack.log
 
-      - name: 📝 准备劫持脚本 (hijack_engine.sh)
-        run: |
-          # 将你的劫持逻辑写入文件，注意这里使用了 find 保证路径动态捕捉
-          cat << 'EOF' > hijack_engine.sh
-          #!/bin/bash
-          TARGET_APPEND=("kernel_platform/bazel-cache/*/execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config")
-          TARGET_MODIFY_EXISTING=("kernel_platform/bazel-cache/*/execroot/_main/bazel-out/k8-fastbuild/bin/msm-kernel/sun_perf_config/out_dir/.config")
-          ENABLE=("KSU" "KSU_SUSFS" "KSU_SUSFS_SUS_MOUNT" "KSU_SUSFS_SUS_PATH" "KSU_SUSFS_HAS_KSU_SUSFS" "KSU_SUSFS_SUS_MEMFD" "KSU_SUSFS_SUS_KSTAT" "KSU_SUSFS_TRY_UMUNT" "KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT" "KSU_SUSFS_SPOOF_UNAME" "KSU_SUSFS_ENABLE_LOG" "KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS" "KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG" "KSU_SUSFS_OPEN_REDIRECT" "KSU_SUSFS_SUS_MAP" "KPM" "KPROBES" "KPROBE_EVENTS" "HAVE_KPROBES" "CPU_FREQ_GOV_PERFORMANCE" "CPU_FREQ_GOV_USERSPACE")
-          CONFIGS=("KNOX_NCM" "SEC_RESTRICT_FORK" "SEC_RESTRICT_ROOTING" "UH" "RKP" "KDP" "LOCALVERSION_AUTO" "GAF" "FIVE" "PROCA" "INTEGRITY" "TRIM_UNUSED_KSYMS" "SECURITY_DEFEX")
-          NEW_VERSION="-SukiSU-Ultra"
-          PAYLOAD="# --- SUKISU HIJACK FINAL OVERRIDE ---\nCONFIG_LOCALVERSION=\"${NEW_VERSION}\"\n$(for c in "${ENABLE[@]}"; do echo "CONFIG_$c=y"; done)\n$(for c in "${CONFIGS[@]}"; do echo "# CONFIG_$c is not set"; done)\n# --- END SUKISU ---"
-          
-          echo "🚀 [$(date +%T)] 劫持引擎开始扫描路径..."
-          while true; do
-              # 路径 1: 物理追加
-              for f in ${TARGET_APPEND[@]}; do
-                  [ -f $f ] || continue
-                  if ! grep -q "SUKISU HIJACK" "$f"; then
-                      echo -e "$PAYLOAD" >> "$f"
-                      echo "::notice title=已劫持追加::$f"
-                  fi
-              done
-              # 路径 2: 查找修改
-              for f in ${TARGET_MODIFY_EXISTING[@]}; do
-                  [ -f $f ] || continue
-                  if ! grep -q "SUKISU HIJACK" "$f"; then
-                      sed -i "s|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"$NEW_VERSION\"|" "$f"
-                      # 这里可以根据需要添加更多 sed 逻辑
-                      echo "::notice title=已劫持修改::$f"
-                  fi
-              done
-              sleep 0.5
-          done
-          EOF
-          chmod +x hijack_engine.sh
-
-      - name: 🧬 注入 SukiSU-Ultra 并搬运 SUSFS
+      - name: 🧬 注入 SukiSU-Ultra & SUSFS 源码 (精准适配)
         run: |
           cd kernel_platform/common
+          
+          # 1. 注入 SukiSU 核心
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
+          
+          # 2. 克隆 SUSFS gki-android15-6.6-dev 分支
           git clone --depth=1 -b gki-android15-6.6-dev https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
+          
+          # 3. 搬运核心物理文件
           cp /tmp/susfs/kernel_patches/fs/susfs.c ./fs/
           cp /tmp/susfs/kernel_patches/include/linux/susfs.h ./include/linux/
           cp /tmp/susfs/kernel_patches/include/linux/susfs_def.h ./include/linux/
-          [ -f "drivers/kernelsu/ksu.c" ] && sed -i '1i #include <linux/susfs.h>' drivers/kernelsu/ksu.c
+          
+          # 4. 应用补丁 (如果补丁已手动合入可忽略报错)
+          cd drivers/kernelsu && patch -p1 < /tmp/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || echo "KSU Patch Skip"
+          cd ../../ && patch -p1 < /tmp/susfs/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch || echo "Core Patch Skip"
+          
+          # 5. 注册编译目标
           grep -q "susfs.o" fs/Makefile || echo "obj-y += susfs.o" >> fs/Makefile
+          
+          # 6. 移除 ABI 保护
           rm -f android/abi_gki_protected_exports_*
+          echo "✅ 注入流程已全部对齐"
 
-      - name: 🏗️ 执行内核编译 (包含后台劫持引擎)
+      - name: 🛰️ 启动后台劫持引擎
         run: |
-          # 1. 后台启动你的劫持脚本
-          nohup ./hijack_engine.sh > hijack_engine.log 2>&1 &
-          HIJACK_PID=$!
-          echo "🚀 劫持引擎已在后台启动 (PID: $HIJACK_PID)"
+          # 使用 nohup 确保后台进程不会随当前 shell 退出而消失
+          # 使用 stdbuf 强制输出刷新到 hijack.log
+          nohup sudo stdbuf -oL -eL ./kernel_platform/build/kernel/build.config.sh > hijack.log 2>&1 &
+          
+          # 验证进程是否存活
+          sleep 3
+          if pgrep -f "build.config.sh" > /dev/null; then
+            echo "✅ 劫持引擎已在后台启动 (PID: $(pgrep -f "build.config.sh"))"
+          else
+            echo "❌ 劫持引擎启动失败！查看启动错误："
+            cat hijack.log
+            exit 1
+          fi
 
-          # 2. 启动监控进程，将劫持动态输出到控制台
-          (
-            tail -f hijack_engine.log &
-            tail -f hijack.log
-          ) &
+      - name: 🏗️ 执行内核编译 (实时监控劫持动态)
+        run: |
+          # 启动后台监控：实时打印日志文件内容变动
+          tail -f hijack.log &
           MONITOR_PID=$!
           
-          # 3. 运行真正的编译脚本
           export LOCALVERSION=""
-          stdbuf -oL -eL ./build_kernel_GKI.sh pa3q_chn_openx user sun 2>&1 | tee hijack.log
+          # 执行编译
+          # yes "" 防止脚本在编译过程中有交互式停顿
+          yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
           
-          # 4. 清理
-          kill $HIJACK_PID $MONITOR_PID || true
+          # 编译结束后杀死监控和后台劫持
+          kill $MONITOR_PID || true
+          sudo pkill -f "build.config.sh" || true
 
-      - name: 🛠️ 提取并打包
+      - name: 🛠️ 提取并打包产物
         if: success()
         run: |
           mkdir -p dtbo_work
           find out drivers -name "*.dtbo" -type f | while read -r file; do
               cp "$file" "dtbo_work/$(basename "$file")" 2>/dev/null || true
           done
-          [ -n "$(ls -A dtbo_work)" ] && ./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg create dtbo.img dtbo_work/*.dtbo || true
+          [ -f "kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg" ] && ./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg create dtbo.img dtbo_work/*.dtbo || true
+          
           GLOBAL_IMAGE=$(find out -name "Image" | grep "sun_perf" | head -n 1)
           git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 ak3_pack
           [ -n "$GLOBAL_IMAGE" ] && cp "$GLOBAL_IMAGE" ak3_pack/
           [ -f "dtbo.img" ] && cp dtbo.img ak3_pack/
-          cd ak3_pack && zip -r9 ../S25U-SukiSU-SUSFS-Flashable.zip ./*
+          cd ak3_pack && zip -r9 ../S25U-SukiSU-Kernel.zip ./*
 
-      - name: 📤 上传
+      - name: 📤 上传最终结果
         uses: actions/upload-artifact@v4
         with:
-          name: S25U-SukiSU-Ultra-Final
+          name: S25U-Final-Image
           path: |
-            S25U-SukiSU-SUSFS-Flashable.zip
-            hijack_engine.log
+            S25U-SukiSU-Kernel.zip
             hijack.log
 
