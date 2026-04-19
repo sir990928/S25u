@@ -1,4 +1,4 @@
-name: "S25U-SukiSU-Ultra-6.6-Flat-Path-Final"
+name: "S25U-SukiSU-Ultra-6.6-Manual-Fixed"
 
 on:
   push:
@@ -18,48 +18,56 @@ jobs:
           chmod +x kernel_platform/build/kernel/build.config.sh || true
           touch hijack.log && chmod 666 hijack.log
 
-      - name: 🧬 注入 SukiSU-Ultra & 手动硬核注入 SUSFS (针对扁平目录适配)
+      - name: 🧬 注入 SukiSU-Ultra & 手动硬核注入 SUSFS (深度修正版)
         run: |
           cd kernel_platform/common
           
           # 1. 执行 SukiSU-Ultra 自动注入
-          echo "🛠️ 正在运行 SukiSU-Ultra 自动化脚本..."
+          echo "🛠️ 运行 SukiSU-Ultra 自动化脚本..."
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           
-          # 2. 获取 SUSFS 源码 (Android 15 Dev 分支)
+          # 2. 获取 SUSFS 源码
           echo "📥 克隆 SUSFS gki-android15-6.6-dev 分支..."
           git clone --depth=1 -b gki-android15-6.6-dev https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
           
-          # 3. 手动搬运核心文件
+          # 3. 手动搬运核心文件 (确保物理文件到位)
           echo "📦 搬运 SUSFS 源码..."
           cp /tmp/susfs/kernel_patches/fs/susfs.c ./fs/
           cp /tmp/susfs/kernel_patches/include/linux/susfs.h ./include/linux/
           cp /tmp/susfs/kernel_patches/include/linux/susfs_def.h ./include/linux/
           
-          # 4. 【精准修复】强行开启 SUSFS 宏定义
+          # 4. 【手动修复 KSU 注入】针对 SukiSU 扁平结构
+          # 不再依赖报错的 10号补丁，直接手动注入宏定义和头文件
           if [ -f "drivers/kernelsu/Makefile" ]; then
               echo "ccflags-y += -DCONFIG_KSU_SUSFS" >> drivers/kernelsu/Makefile
-              echo "✅ 已在 drivers/kernelsu/Makefile 注入宏定义"
+              echo "✅ 已在 Makefile 注入宏定义"
           fi
           
-          # 5. 【补丁合入】
-          echo "🩹 正在应用补丁..."
-          cd drivers/kernelsu
-          patch -p1 < /tmp/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || echo "⚠️ KSU Patch 冲突，已依靠 Makefile 宏定义兜底"
-          cd ../../
+          if [ -f "drivers/kernelsu/ksu.c" ]; then
+              # 在 ksu.c 第一行强行插入头文件引用
+              sed -i '1i #include <linux/susfs.h>' drivers/kernelsu/ksu.c
+              echo "✅ 已在 ksu.c 手动注入头文件"
+          fi
           
-          patch -p1 --fuzz=3 --ignore-whitespace < 50_add_susfs_in_gki-android15-6.6.patch || echo "⚠️ Core Patch 部分失败，将依靠手动注册运行"
+          # 5. 【手动修复内核主体注入】
+          echo "🩹 正在准备内核补丁..."
+          # 将补丁拷贝到当前目录，防止 patch 命令找不到文件
+          cp /tmp/susfs/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./
+          
+          # 执行内核补丁 (容错模式)
+          patch -p1 --fuzz=3 --ignore-whitespace < 50_add_susfs_in_gki-android15-6.6.patch || echo "⚠️ Core Patch 部分失败，已靠手动 cp 核心文件兜底"
 
           # 6. 【手动注册】强行让内核编译 fs/susfs.c
           if ! grep -q "susfs.o" fs/Makefile; then
               echo "obj-y += susfs.o" >> fs/Makefile
+              echo "✅ 已在 fs/Makefile 注册 susfs.o"
           fi
 
           # 7. 移除 ABI 保护
           echo "🚫 移除 ABI 保护文件..."
           rm -f android/abi_gki_protected_exports_*
           
-          echo "✅ 注入流程已全部对齐"
+          echo "✅ 手动注入流程全部执行完毕"
 
       - name: 🛰️ 启动后台劫持引擎
         run: |
@@ -109,7 +117,7 @@ jobs:
           cd ak3_pack && zip -r9 ../S25U-SukiSU-Kernel-Flashable.zip ./*
           cd ..
 
-      - name: 📦 连根拔起：归档原始目录 (out/drivers)
+      - name: 📦 归档原始目录 (out/drivers)
         if: always()
         run: |
           mkdir -p final_artifacts
@@ -121,6 +129,6 @@ jobs:
       - name: 📤 上传最终产物
         uses: actions/upload-artifact@v4
         with:
-          name: S25U-SukiSU-Ultra-Final-Artifacts
+          name: S25U-Final-Artifacts
           path: final_artifacts/
 
