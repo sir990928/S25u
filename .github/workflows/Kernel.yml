@@ -1,4 +1,4 @@
-name: "S25U-SukiSU-Integrated-Build"
+name: "S25U-SukiSU-Ultra-6.6-Global-Pack"
 
 on:
   push:
@@ -12,33 +12,38 @@ jobs:
       - name: 🚀 检出代码
         uses: actions/checkout@v4
 
-      - name: ⚙️ 准备环境与哨兵点火
+      - name: ⚙️ 准备环境
         run: |
-          sudo apt update && sudo apt install -y zip cpio python3 inotify-tools
+          sudo apt update && sudo apt install -y zip cpio python3 inotify-tools patch
           chmod +x kernel_platform/build/kernel/build.config.sh || true
-          
-          # 创建日志文件并给全权限，防止 sudo 写入失败
           touch hijack.log && chmod 666 hijack.log
+
+      - name: 🧬 注入 SukiSU-Ultra & 手动补入 SUSFS (6.6)
+        run: |
+          cd kernel_platform/common
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           
-          # 后台运行，日志重定向到文件
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
+          cp /tmp/susfs/kernel/drivers/susfs.c drivers/kernelsu/
+          cp /tmp/susfs/kernel/include/linux/susfs.h include/linux/
+          echo "obj-y += susfs.o" >> drivers/kernelsu/Makefile
+          echo "KBUILD_CFLAGS += -fno-optimize-sibling-calls" >> Makefile
+          echo "✅ SukiSU 与 SUSFS 源码注入完成"
+
+      - name: 🛰️ 启动后台劫持引擎
+        run: |
           sudo stdbuf -oL -eL ./kernel_platform/build/kernel/build.config.sh > hijack.log 2>&1 &
           echo "HIJACK_PID=$!" >> $GITHUB_ENV
-          echo "🚀 劫持引擎已在后台点火"
 
       - name: 🏗️ 执行内核编译
         run: |
-          # 【强行查岗哨兵】
-          # 每 5 秒读取一次日志，只要有新内容，就强行插播到控制台
           (
-            echo "📢 实时监控启动..."
             LAST_CONTENT=""
             while true; do
               CURRENT_CONTENT=$(cat hijack.log 2>/dev/null)
               if [ "$CURRENT_CONTENT" != "$LAST_CONTENT" ]; then
-                echo -e "\n--- [实时劫持战报] ---"
-                # 只显示新增的部分，避免刷屏
+                echo -e "\n--- [实时战报] ---"
                 diff <(echo "$LAST_CONTENT") <(echo "$CURRENT_CONTENT") | grep '^>' | sed 's/^> //' || echo "$CURRENT_CONTENT"
-                echo "----------------------"
                 LAST_CONTENT="$CURRENT_CONTENT"
               fi
               sleep 5
@@ -46,49 +51,61 @@ jobs:
           ) &
           MONITOR_PID=$!
 
-          # 执行主编译
           export LOCALVERSION=""
           yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
           
-          # 结束后清理
           kill $MONITOR_PID || true
 
-      - name: 🛠️ 合成 DTBO 并集成 AnyKernel3
+      - name: 🛠️ 全局搜寻产物并连根拔起打包
         if: success()
         run: |
+          # 1. 提取唯一 DTBO 并合成
           mkdir -p dtbo_work
-          # 提取唯一 DTBO (同时查找 out 和 drivers)
+          echo "🔍 正在从 out/ 和 drivers/ 提取唯一 DTBO..."
           find out drivers -name "*.dtbo" -type f 2>/dev/null | while read -r dtbo_file; do
-              hash=$(md5sum "$dtbo_file" | awk '{print $1}')
-              [ -z "${seen_hashes[$hash]}" ] && seen_hashes[$hash]=1 && cp "$dtbo_file" "dtbo_work/${hash}.dtbo"
+              file_hash=$(md5sum "$dtbo_file" | awk '{print $1}')
+              if [ ! -f "dtbo_work/${file_hash}.hash" ]; then
+                  touch "dtbo_work/${file_hash}.hash"
+                  cp "$dtbo_file" "dtbo_work/${file_hash}.dtbo"
+              fi
           done
-
-          ./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg create dtbo.img dtbo_work/*.dtbo
+          ./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg create dtbo.img dtbo_work/*.dtbo || true
           
-          git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25
-          find kernel_platform/bazel-cache -name "Image" -type f | grep "sun_perf" | head -n 1 | xargs -I {} cp {} AnyKernel3/
-          [ -f "dtbo.img" ] && cp dtbo.img AnyKernel3/
-          
-          cd AnyKernel3 && zip -r9 ../S25U-SukiSU-Kernel-Flashable.zip ./*
+          # 2. 【核心要求】从根目录全局寻找 Image
+          echo "🔍 正在根目录全局搜寻内核 Image..."
+          # 排除 AnyKernel 目录和不需要的架构，锁定 sun_perf 编译出的 Image
+          GLOBAL_IMAGE=$(find . -name "Image" -type f | grep "sun_perf" | head -n 1)
+          if [ -z "$GLOBAL_IMAGE" ]; then
+              echo "⚠️ 未找到特定 Image，尝试通用搜索..."
+              GLOBAL_IMAGE=$(find . -name "Image" -type f | grep -v "AnyKernel" | head -n 1)
+          fi
+          echo "🎯 锁定 Image 路径: $GLOBAL_IMAGE"
 
-      - name: 📂 收集原始产物
+          # 3. 制作 AnyKernel3 刷机包
+          git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25 ak3_pack
+          [ -n "$GLOBAL_IMAGE" ] && cp "$GLOBAL_IMAGE" ak3_pack/
+          [ -f "dtbo.img" ] && cp dtbo.img ak3_pack/
+          cd ak3_pack && zip -r9 ../S25U-SukiSU-Kernel-Flashable.zip ./*
+          cd ..
+
+          # 4. 【连根拔起】全量归档
+          echo "📦 正在连根拔起打包 out/ 和 drivers/ ..."
+          [ -d "out" ] && zip -r9 out_full_archive.zip out/
+          [ -d "drivers" ] && zip -r9 drivers_full_archive.zip drivers/
+
+      - name: 📂 整理产物
         if: always()
         run: |
-          mkdir -p raw_folders
-          [ -d "out" ] && cp -r out raw_folders/
-          [ -d "drivers" ] && cp -r drivers raw_folders/
-          find kernel_platform/bazel-cache -name "Image" -type f | grep "sun_perf" | head -n 1 | xargs -I {} cp {} raw_folders/
-          cp dtbo.img hijack.log raw_folders/ 2>/dev/null || true
-          
-          echo "🎯 最终劫持记录检查："
-          cat hijack.log
+          mkdir -p final_artifacts
+          cp S25U-SukiSU-Kernel-Flashable.zip final_artifacts/ 2>/dev/null || true
+          cp out_full_archive.zip final_artifacts/ 2>/dev/null || true
+          cp drivers_full_archive.zip final_artifacts/ 2>/dev/null || true
+          cp hijack.log final_artifacts/ 2>/dev/null || true
 
-      - name: 📤 上传产物
+      - name: 📤 上传全量结果
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25U-Full-Artifacts
-          path: |
-            S25U-SukiSU-Kernel-Flashable.zip
-            raw_folders/
+          name: S25U-SukiSU-Ultra-Global-Pack
+          path: final_artifacts/
 
