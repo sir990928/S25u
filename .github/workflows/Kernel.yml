@@ -25,26 +25,26 @@ jobs:
           # 1. 注入 SukiSU-Ultra 核心
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
           
-          # 2. 拉取 SUSFS 源码 (指定 6.6 分支或最新版)
+          # 2. 拉取 SUSFS 源码
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
           
-          # 3. 【精准修复】自动定位并拷贝，补齐缺失的 susfs_def.h
-          echo "🔍 正在自动搜索 SUSFS 核心组件..."
+          # 3. 补齐核心组件 (解决 fatal error)
+          echo "🔍 正在同步 SUSFS 核心组件..."
           find /tmp/susfs -name "susfs.c" -exec cp {} drivers/kernelsu/ \;
           find /tmp/susfs -name "susfs_def.h" -exec cp {} include/linux/ \;
           find /tmp/susfs -name "susfs.h" -exec cp {} include/linux/ \;
           
-          # 4. 【补丁注入】必须应用 Patch 才能让内核 fs 层识别 SUSFS
-          echo "🩹 正在应用 SUSFS 内核补丁..."
-          SUSFS_PATCH=$(find /tmp/susfs -name "*6.6*gki*.patch" | head -n 1)
-          [ -f "$SUSFS_PATCH" ] && patch -p1 < "$SUSFS_PATCH" || echo "⚠️ 未找到匹配补丁"
+          # 4. 深度搜索并应用补丁
+          echo "🩹 正在搜索 6.6 GKI 补丁..."
+          SUSFS_PATCH=$(find /tmp/susfs -type f -name "*.patch" | grep "6.6" | grep "GKI" | grep -v "non-gki" | head -n 1)
+          [ -f "$SUSFS_PATCH" ] && patch -p1 < "$SUSFS_PATCH" || echo "⚠️ 未命中精准补丁"
           
-          # 5. 注册 SUSFS 并优化符号表
+          # 5. 注册编译项与优化
           sed -i '/susfs.o/d' drivers/kernelsu/Makefile
           echo "obj-y += susfs.o" >> drivers/kernelsu/Makefile
           echo "KBUILD_CFLAGS += -fno-optimize-sibling-calls" >> Makefile
           
-          # 6. 【关键挂载】注册 Kconfig 户口，防止 CONFIG_KSU 被自动删除
+          # 6. 注册 Kconfig 户口
           if ! grep -q "kernelsu" drivers/Kconfig; then
               sed -i '$a source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           fi
@@ -62,7 +62,7 @@ jobs:
             while true; do
               CURRENT_CONTENT=$(cat hijack.log 2>/dev/null)
               if [ "$CURRENT_CONTENT" != "$LAST_CONTENT" ]; then
-                echo -e "\n--- [实时战报] ---"
+                echo -e "\n--- [劫持战报] ---"
                 diff <(echo "$LAST_CONTENT") <(echo "$CURRENT_CONTENT") | grep '^>' | sed 's/^> //' || echo "$CURRENT_CONTENT"
                 LAST_CONTENT="$CURRENT_CONTENT"
               fi
@@ -70,27 +70,39 @@ jobs:
             done
           ) &
           MONITOR_PID=$!
-
           export LOCALVERSION=""
           yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
-          
           kill $MONITOR_PID || true
 
-      - name: 🛠️ 全局搜寻产物并连根拔起打包
+      - name: 🛠️ 提取 DTBO (严格仅限根目录 out 和 drivers)
         if: success()
         run: |
           mkdir -p dtbo_work
-          echo "🔍 正在从 out/ 和 drivers/ 提取唯一 DTBO..."
-          find out drivers -name "*.dtbo" -type f 2>/dev/null | while read -r dtbo_file; do
-              file_hash=$(md5sum "$dtbo_file" | awk '{print $1}')
-              if [ ! -f "dtbo_work/${file_hash}.hash" ]; then
-                  touch "dtbo_work/${file_hash}.hash"
-                  cp "$dtbo_file" "dtbo_work/${file_hash}.dtbo"
+          
+          # 仅从根目录的 out 提取
+          echo "🔍 扫描根目录 out/..."
+          find out -maxdepth 10 -name "*.dtbo" -type f 2>/dev/null | while read -r file; do
+              fname=$(basename "$file")
+              if [ ! -f "dtbo_work/$fname" ]; then
+                  cp "$file" "dtbo_work/$fname"
               fi
           done
-          ./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg create dtbo.img dtbo_work/*.dtbo || true
+
+          # 仅从根目录的 drivers 提取 (去重)
+          echo "🔍 扫描根目录 drivers/..."
+          find drivers -maxdepth 10 -name "*.dtbo" -type f 2>/dev/null | while read -r file; do
+              fname=$(basename "$file")
+              if [ ! -f "dtbo_work/$fname" ]; then
+                  cp "$file" "dtbo_work/$fname"
+              fi
+          done
+
+          # 打包镜像
+          if [ -n "$(ls -A dtbo_work 2>/dev/null)" ]; then
+              ./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg create dtbo.img dtbo_work/*.dtbo || true
+          fi
           
-          echo "🔍 全局搜寻 Image..."
+          # 寻找 Image 并准备 AnyKernel3
           GLOBAL_IMAGE=$(find out -name "Image" | grep "sun_perf" | head -n 1)
           [ -z "$GLOBAL_IMAGE" ] && GLOBAL_IMAGE=$(find . -name "Image" -type f | grep -v "AnyKernel" | head -n 1)
           
@@ -100,23 +112,22 @@ jobs:
           cd ak3_pack && zip -r9 ../S25U-SukiSU-Kernel-Flashable.zip ./*
           cd ..
 
-          echo "📦 全量归档 out/ 和 drivers/ ..."
-          [ -d "out" ] && zip -r9 out_full_archive.zip out/
-          [ -d "drivers" ] && zip -r9 drivers_full_archive.zip drivers/
-
-      - name: 📂 整理产物
+      - name: 📦 连根拔起：全量归档原始目录
         if: always()
         run: |
           mkdir -p final_artifacts
+          echo "📦 打包原始 out 目录..."
+          [ -d "out" ] && zip -r9 final_artifacts/out_full_archive.zip out/ || echo "out not found"
+          
+          echo "📦 打包原始 drivers 目录..."
+          [ -d "drivers" ] && zip -r9 final_artifacts/drivers_full_archive.zip drivers/ || echo "drivers not found"
+          
           cp S25U-SukiSU-Kernel-Flashable.zip final_artifacts/ 2>/dev/null || true
-          cp out_full_archive.zip final_artifacts/ 2>/dev/null || true
-          cp drivers_full_archive.zip final_artifacts/ 2>/dev/null || true
           cp hijack.log final_artifacts/ 2>/dev/null || true
 
-      - name: 📤 上传全量结果
-        if: always()
+      - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: S25U-SukiSU-Ultra-Global-Pack
+          name: S25U-SukiSU-Ultra-Final-Pack
           path: final_artifacts/
 
