@@ -19,10 +19,21 @@ COUNT=0
 # 强制行缓冲
 export stdbuf -oL
 
-echo "🚀 [$(date +%T)] 劫持引擎点火：定点拦截模式 (0.1s 采样)"
+# 提前构建真理块（Payload），减少循环内的计算
+PAYLOAD="\n# --- SUKISU HIJACK START ---\n"
+PAYLOAD+="CONFIG_LOCALVERSION=\"$NEW_VERSION\"\n"
+for cfg in "${ENABLE[@]}"; do PAYLOAD+="CONFIG_$cfg=y\n"; done
+for cfg in "${CONFIGS[@]}"; do PAYLOAD+="# CONFIG_$cfg is not set\n"; done
+PAYLOAD+="# --- SUKISU HIJACK END ---\n"
+
+# 构建删除正则（一次性删除所有相关项）
+# 匹配所有以 CONFIG_ 开头且在清单中的项，或者已经被注释掉的项
+PATTERN=$(printf "|CONFIG_%s|# CONFIG_%s is not set" "${CONFIGS[@]}" "${ENABLE[@]}" "${CONFIGS[@]}" "${ENABLE[@]}")
+PATTERN="^(${PATTERN:1}|CONFIG_LOCALVERSION=)"
+
+echo "🚀 [$(date +%T)] 劫持引擎点火：全量原子覆盖模式 (0.1s 采样)"
 
 while true; do
-  # 遍历目标路径（通配符展开）
   for f in ${TARGETS[@]}; do
     [ ! -f "$f" ] && continue
     
@@ -32,38 +43,18 @@ while true; do
     old_ts=$(grep "^$f " "$TIME_DB" 2>/dev/null | awk '{print $2}')
     old_ts=${old_ts:-0}
 
-    # 判定：时间戳更新即视为 Bazel 重置了配置
     if [ "$ts" -gt "$old_ts" ]; then
       ((COUNT++))
 
-      # A. 版本号精准替换
-      if grep -q "CONFIG_LOCALVERSION=" "$f"; then
-          sed -i "s|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"$NEW_VERSION\"|" "$f"
-      else
-          echo "CONFIG_LOCALVERSION=\"$NEW_VERSION\"" >> "$f"
-      fi
+      # --- 核心原子手术 ---
+      # 1. 使用极速正则删除所有干扰行
+      sed -i -E "/$PATTERN/d" "$f"
 
-      # B. 关闭项：物理切除子项 + 原地替换本体
-      for cfg in "${CONFIGS[@]}"; do
-          sed -i "/^CONFIG_${cfg}_/d" "$f"
-          sed -i "/^# CONFIG_${cfg}_/d" "$f"
-          if grep -q "CONFIG_$cfg" "$f" || grep -q "# CONFIG_$cfg is not set" "$f"; then
-              sed -i "s/^CONFIG_$cfg=.*/# CONFIG_$cfg is not set/" "$f"
-              sed -i "s/^# CONFIG_$cfg is not set.*/# CONFIG_$cfg is not set/" "$f"
-          else
-              echo "# CONFIG_$cfg is not set" >> "$f"
-          fi
-      done
-
-      # C. 开启项
-      for cfg in "${ENABLE[@]}"; do
-          if grep -q "CONFIG_$cfg" "$f"; then
-              sed -i "s/^# CONFIG_$cfg is not set/CONFIG_$cfg=y/" "$f"
-              sed -i "s/^CONFIG_$cfg=.*/CONFIG_$cfg=y/" "$f"
-          else
-              echo "CONFIG_$cfg=y" >> "$f"
-          fi
-      done
+      # 2. 瞬间追加全量配置块
+      printf "$PAYLOAD" >> "$f"
+      
+      # 3. 强行冲刷磁盘缓存，确保护送给 Bazel
+      sync "$f"
 
       # 更新数据库
       new_ts=$(stat -c "%Y" "$f" 2>/dev/null)
@@ -71,10 +62,8 @@ while true; do
       echo "$f ${new_ts:-$ts}" >> "$TIME_DB.tmp"
       mv -f "$TIME_DB.tmp" "$TIME_DB"
       
-      # 💥 核心：双路报告 (网页通知 + 终端喷射)
-      echo "::notice title=劫持成功::已在 $f 完成第 $COUNT 次手术"
-      echo "💎 [$(date +%T)] 修改成功 $COUNT 次：$f"
-      sync
+      echo "::notice title=暴力劫持成功::已在 $f 完成第 $COUNT 次全量手术"
+      echo "💎 [$(date +%T)] 瞬间覆盖完成：$f"
     fi
   done
   sleep 0.1
