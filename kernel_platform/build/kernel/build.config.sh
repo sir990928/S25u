@@ -1,99 +1,109 @@
 #!/bin/bash
 
-# --- 目标路径 ---
+# --- 1. 目标路径定义 ---
+# 策略 A：直接追加 (通用 GKI 配置)
 TARGET_APPEND=(
     "kernel_platform/bazel-cache/*/execroot/_main/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_config/out_dir/.config"
 )
 
-TARGET_MODIFY_EXISTING=(
+# 策略 B：精准修改 (三星专用配置，支持 y 变禁用)
+TARGET_MODIFY=(
     "kernel_platform/bazel-cache/*/execroot/_main/bazel-out/k8-fastbuild/bin/msm-kernel/sun_perf_config/out_dir/.config"
 )
 
-# --- 配置 ---
+# --- 2. 手术配置清单 ---
+# 需要关闭/禁用的项 (y -> # CONFIG_XXX is not set)
 CONFIGS=("KNOX_NCM" "SEC_RESTRICT_FORK" "SEC_RESTRICT_ROOTING" "UH" "RKP" "KDP" "LOCALVERSION_AUTO" "GAF" "FIVE" "PROCA" "INTEGRITY" "TRIM_UNUSED_KSYMS" "SECURITY_DEFEX")
+
+# 需要开启的项 (is not set -> y)
 ENABLE=("KSU" "KSU_SUSFS" "KSU_SUSFS_SUS_MOUNT" "KSU_SUSFS_SUS_PATH" "KSU_SUSFS_HAS_KSU_SUSFS" "KSU_SUSFS_SUS_MEMFD" "KSU_SUSFS_SUS_KSTAT" "KSU_SUSFS_TRY_UMUNT" "KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT" "KSU_SUSFS_SPOOF_UNAME" "KSU_SUSFS_ENABLE_LOG" "KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS" "KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG" "KSU_SUSFS_OPEN_REDIRECT" "KSU_SUSFS_SUS_MAP" "KPM" "KPROBES" "KPROBE_EVENTS" "HAVE_KPROBES" "CPU_FREQ_GOV_PERFORMANCE" "CPU_FREQ_GOV_USERSPACE")
 
+# 内核 LocalVersion 后缀
 NEW_VERSION="-SukiSU-Ultra"
 
-# --- 拼装 PAYLOAD ---
-PAYLOAD="
-# --- SUKISU HIJACK START ---
-CONFIG_LOCALVERSION=\"$NEW_VERSION\"
-$(for c in "${ENABLE[@]}"; do echo "CONFIG_$c=y"; done)
-$(for c in "${CONFIGS[@]}"; do echo "# CONFIG_$c is not set"; done)
-# --- SUKISU HIJACK END ---
-"
-
+# --- 3. 引擎逻辑处理 ---
 TIME_DB="/tmp/.hijack_time_db"
 touch "$TIME_DB"
+COUNT=0
 
-echo "🚀 [$(date +%T)] 劫持引擎已启动，正在监听 .config 文件..."
+# 预构建追加用的 PAYLOAD
+PAYLOAD=$(cat <<EOF
 
-# --- 主循环 ---
+# --- SUKISU HIJACK OVERRIDE START ---
+CONFIG_LOCALVERSION="${NEW_VERSION}"
+$(for c in "${ENABLE[@]}"; do echo "CONFIG_$c=y"; done)
+$(for c in "${CONFIGS[@]}"; do echo "# CONFIG_$c is not set"; done)
+# --- SUKISU HIJACK OVERRIDE END ---
+EOF
+)
+
+echo "🔥 [$(date +%T)] 劫持引擎全功率启动！"
+echo "📡 正在监听 A 组 (追加覆盖) 和 B 组 (手术改写)..."
+
 while true; do
-    # 策略 1：直接追加
-    for f in "${TARGET_APPEND[@]}"; do
-        [ -f "$f" ] || continue
-        ts=$(stat -c "%Y" "$f" 2>/dev/null || echo 0)
-        old_ts=$(awk -v f="$f" '$1==f{print $2}' "$TIME_DB" 2>/dev/null || echo 0)
+  # ======================================
+  # 策略 A：追加覆盖 (确保优先级最高)
+  # ======================================
+  for f in ${TARGET_APPEND[@]}; do
+    [ ! -f "$f" ] && continue
+    ts=$(stat -c "%Y" "$f" 2>/dev/null)
+    old_ts=$(awk -v f="$f" '$1==f{print $2}' "$TIME_DB" 2>/dev/null || echo 0)
 
-        if [ "$ts" -gt "$old_ts" ]; then
-            # GitHub 日志图标通知
-            echo "::warning title=🛰️ 劫持成功::正在追加配置到: $f"
-            echo "📝 [$(date +%T)] 正在追加 PAYLOAD 至 $f"
-            
-            echo "$PAYLOAD" >> "$f"
-            sync "$f"
-            
-            awk -v f="$f" -v ts="$ts" '$1!=f' "$TIME_DB" > "$TIME_DB.tmp"
-            echo "$f $ts" >> "$TIME_DB.tmp"
-            mv -f "$TIME_DB.tmp" "$TIME_DB"
-            echo "✅ [$(date +%T)] $f 修改完成"
-        fi
-    done
+    # 只要时间戳更新，或者发现被 Bazel 还原了内容，就立刻补刀
+    if [ "$ts" -gt "$old_ts" ] || ! grep -q "SUKISU HIJACK" "$f"; then
+      ((COUNT++))
+      echo "$PAYLOAD" >> "$f"
+      sync "$f"
+      
+      echo "::warning title=🛰️ 策略A·追加注入::[$COUNT] 已改写: $f"
+      awk -v f="$f" -v ts="$ts" '$1!=f' "$TIME_DB" > "$TIME_DB.tmp"
+      echo "$f $ts" >> "$TIME_DB.tmp"
+      mv -f "$TIME_DB.tmp" "$TIME_DB"
+    fi
+  done
 
-    # 策略 2：精确修改
-    for f in "${TARGET_MODIFY_EXISTING[@]}"; do
-        [ -f "$f" ] || continue
-        ts=$(stat -c "%Y" "$f" 2>/dev/null || echo 0)
-        old_ts=$(awk -v f="$f" '$1==f{print $2}' "$TIME_DB" 2>/dev/null || echo 0)
+  # ======================================
+  # 策略 B：精准原位修改 (改名 + 双向改写)
+  # ======================================
+  for f in ${TARGET_MODIFY[@]}; do
+    [ ! -f "$f" ] && continue
+    ts=$(stat -c "%Y" "$f" 2>/dev/null)
+    old_ts=$(awk -v f="$f" '$1==f{print $2}' "$TIME_DB" 2>/dev/null || echo 0)
 
-        if [ "$ts" -gt "$old_ts" ]; then
-            echo "::notice title=🎯 精准打击::正在修改现有配置: $f"
-            echo "⚙️ [$(date +%T)] 正在处理 $f"
+    if [ "$ts" -gt "$old_ts" ]; then
+      ((COUNT++))
+      echo "::notice title=🎯 策略B·精准手术::正在同步配置表: $f"
 
-            # 版本号修改
-            if grep -q "^CONFIG_LOCALVERSION=" "$f"; then
-                sed -i "s|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"$NEW_VERSION\"|" "$f"
-                echo "🔹 已更新 LOCALVERSION 为 $NEW_VERSION"
-            fi
+      # 1. 内核名字原位手术
+      if grep -q "^CONFIG_LOCALVERSION=" "$f"; then
+          sed -i "s|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"$NEW_VERSION\"|" "$f"
+          echo "🔹 [$(date +%T)] 内核名已更正: $NEW_VERSION"
+      fi
 
-            # 开启配置
-            for c in "${ENABLE[@]}"; do
-                if grep -q "^CONFIG_$c=" "$f" || grep -q "^# CONFIG_$c is not set" "$f"; then
-                    sed -i "s|^CONFIG_$c=.*|CONFIG_$c=y|" "$f"
-                    sed -i "s|^# CONFIG_$c is not set|CONFIG_$c=y|" "$f"
-                fi
-            done
-            echo "🟢 已开启 KSU/SUSFS 相关配置"
+      # 2. 开启目标 (y 保持 y, is not set 变 y)
+      for c in "${ENABLE[@]}"; do
+        sed -i "s|^CONFIG_$c=.*|CONFIG_$c=y|" "$f"
+        sed -i "s|^# CONFIG_$c is not set|CONFIG_$c=y|" "$f"
+      done
+      echo "🟢 [$(date +%T)] 核心功能已激活"
 
-            # 关闭干扰配置
-            for c in "${CONFIGS[@]}"; do
-                if grep -q "^CONFIG_$c=" "$f" || grep -q "^# CONFIG_$c is not set" "$f"; then
-                    sed -i "s|^CONFIG_$c=.*|# CONFIG_$c is not set|" "$f"
-                    sed -i "s|^# CONFIG_$c is not set|# CONFIG_$c is not set|" "$f"
-                fi
-            done
-            echo "🔴 已关闭 KNOX/RKP 等干扰项"
+      # 3. 禁用目标 (y 变 is not set, n 变 is not set)
+      for c in "${CONFIGS[@]}"; do
+        # 匹配任何形式的开启或禁用，强制统一为注释格式
+        sed -i "s|^CONFIG_$c=.*|# CONFIG_$c is not set|" "$f"
+        sed -i "s|^# CONFIG_$c is not set|# CONFIG_$c is not set|" "$f"
+      done
+      echo "🔴 [$(date +%T)] 安全干扰项已屏蔽"
 
-            sync "$f"
-            awk -v f="$f" -v ts="$ts" '$1!=f' "$TIME_DB" > "$TIME_DB.tmp"
-            echo "$f $ts" >> "$TIME_DB.tmp"
-            mv -f "$TIME_DB.tmp" "$TIME_DB"
-            echo "✅ [$(date +%T)] $f 修改完成"
-        fi
-    done
+      sync "$f"
+      awk -v f="$f" -v ts="$ts" '$1!=f' "$TIME_DB" > "$TIME_DB.tmp"
+      echo "$f $ts" >> "$TIME_DB.tmp"
+      mv -f "$TIME_DB.tmp" "$TIME_DB"
+      echo "✅ [$(date +%T)] B组配置手术成功"
+    fi
+  done
 
-    sleep 0.1
+  # 保持 0.1 秒高频扫描，确保存储同步
+  sleep 0.1
 done
 
