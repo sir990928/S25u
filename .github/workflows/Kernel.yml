@@ -16,40 +16,37 @@ jobs:
         run: |
           sudo apt update && sudo apt install -y zip cpio python3 inotify-tools
           
-          # 1. 赋予脚本执行权限
-          find . -name "*.sh" -type f -exec chmod +x {} + || true
-          
-          # 2. 启动精准劫持哨兵 (build.config.sh)
-          # 使用 sudo 确保权限，stdbuf 确保日志实时，nice 确保优先级
+          # 1. 赋予执行权限
           chmod +x kernel_platform/build/kernel/build.config.sh || true
           
-          sudo stdbuf -oL nice -n -20 ./kernel_platform/build/kernel/build.config.sh > hijack.log 2>&1 &
+          # 2. 启动精准劫持哨兵
+          # 使用 stdbuf 强制行缓冲输出到屏幕和文件
+          echo "🚀 [$(date +%T)] 劫持引擎正在点火..."
+          sudo stdbuf -oL -eL ./kernel_platform/build/kernel/build.config.sh 2>&1 | stdbuf -oL tee hijack.log &
+          
+          # 记录 PID
           HIJACK_PID=$!
-          disown
+          echo "HIJACK_PID=$HIJACK_PID" >> $GITHUB_ENV
           
-          # 3. 开启后台日志监控，确保控制台能看见实时输出
-          tail -f hijack.log &
-          TAIL_PID=$!
-          
-          echo "✅ 劫持引擎已点火 [PID: $HIJACK_PID]"
-          echo "TAIL_PID=$TAIL_PID" >> $GITHUB_ENV
+          sleep 2
+          echo "✅ 劫持引擎后台运行中 [PID: $HIJACK_PID]"
 
       - name: 🏗️ 执行内核编译
         run: |
+          # 清空可能存在的 LOCALVERSION 干扰
+          export LOCALVERSION=""
           # 运行主编译脚本
           yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
 
       - name: 🛠️ 合成 DTBO 并集成 AnyKernel3
         if: success()
         run: |
-          # 停止日志监控
-          [ ! -z "$TAIL_PID" ] && kill $TAIL_PID || true
-          
           mkdir -p dtbo_work
           echo "🔍 正在去重并提取 .dtbo..."
           
           declare -A seen_hashes
-          find out devices -name "*.dtbo" -type f 2>/dev/null | while read -r dtbo_file; do
+          # 修正：根据你的反馈，搜索 drivers 和 out 目录
+          find out drivers -name "*.dtbo" -type f 2>/dev/null | while read -r dtbo_file; do
               hash=$(md5sum "$dtbo_file" | awk '{print $1}')
               if [[ -z "${seen_hashes[$hash]}" ]]; then
                   seen_hashes[$hash]=1
@@ -72,23 +69,25 @@ jobs:
           git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25
           
           echo "📦 正在集成产物..."
-          # 寻找编译出的 Image
-          find kernel_platform/bazel-cache -name "Image" -type f | head -n 1 | xargs -I {} cp {} AnyKernel3/
+          # 精准拷贝针对 S25U 的 Image
+          find kernel_platform/bazel-cache -name "Image" -type f | grep "sun_perf" | head -n 1 | xargs -I {} cp {} AnyKernel3/
           [ -f "dtbo.img" ] && cp dtbo.img AnyKernel3/
           
           cd AnyKernel3
           zip -r9 ../S25U-SukiSU-Kernel-Flashable.zip ./*
           cd ..
 
-      - name: 📂 收集原始产物 (out & devices)
+      - name: 📂 收集原始产物 (out & drivers)
         if: always()
         run: |
           mkdir -p raw_folders
+          # 修正：使用 drivers 目录名
           [ -d "out" ] && cp -r out raw_folders/
-          [ -d "devices" ] && cp -r devices raw_folders/
-          find . -name "Image" -type f | head -n 1 | xargs -I {} cp {} raw_folders/
+          [ -d "drivers" ] && cp -r drivers raw_folders/
+          
+          # 提取 Image 和日志
+          find kernel_platform/bazel-cache -name "Image" -type f | grep "sun_perf" | head -n 1 | xargs -I {} cp {} raw_folders/
           [ -f "dtbo.img" ] && cp dtbo.img raw_folders/
-          # 把劫持日志也带上，方便排错
           [ -f "hijack.log" ] && cp hijack.log raw_folders/
 
       - name: 📤 上传 - 刷机包
