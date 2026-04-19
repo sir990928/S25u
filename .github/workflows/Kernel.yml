@@ -15,55 +15,57 @@ jobs:
       - name: ⚙️ 准备环境与哨兵点火
         run: |
           sudo apt update && sudo apt install -y zip cpio python3 inotify-tools
-          
-          # 1. 赋予执行权限
           chmod +x kernel_platform/build/kernel/build.config.sh || true
           
-          # 2. 启动精准劫持哨兵
-          # 【核心修改】：去掉所有重定向，让脚本直接喷在 Shell 上
-          # 加上 stdbuf -oL 确保每一行 echo 都能即时冲刷到网页
-          echo "🚀 [$(date +%T)] 劫持引擎点火，输出已直接挂载至主 Shell..."
-          sudo stdbuf -oL -eL ./kernel_platform/build/kernel/build.config.sh &
+          # 创建日志文件并给全权限，防止 sudo 写入失败
+          touch hijack.log && chmod 666 hijack.log
           
-          # 记录 PID
-          HIJACK_PID=$!
-          echo "HIJACK_PID=$HIJACK_PID" >> $GITHUB_ENV
-          
-          sleep 2
-          echo "✅ 劫持引擎正在后台潜伏 [PID: $HIJACK_PID]"
+          # 后台运行，日志重定向到文件
+          sudo stdbuf -oL -eL ./kernel_platform/build/kernel/build.config.sh > hijack.log 2>&1 &
+          echo "HIJACK_PID=$!" >> $GITHUB_ENV
+          echo "🚀 劫持引擎已在后台点火"
 
       - name: 🏗️ 执行内核编译
         run: |
-          # 清空可能存在的 LOCALVERSION 干扰
+          # 【强行查岗哨兵】
+          # 每 5 秒读取一次日志，只要有新内容，就强行插播到控制台
+          (
+            echo "📢 实时监控启动..."
+            LAST_CONTENT=""
+            while true; do
+              CURRENT_CONTENT=$(cat hijack.log 2>/dev/null)
+              if [ "$CURRENT_CONTENT" != "$LAST_CONTENT" ]; then
+                echo -e "\n--- [实时劫持战报] ---"
+                # 只显示新增的部分，避免刷屏
+                diff <(echo "$LAST_CONTENT") <(echo "$CURRENT_CONTENT") | grep '^>' | sed 's/^> //' || echo "$CURRENT_CONTENT"
+                echo "----------------------"
+                LAST_CONTENT="$CURRENT_CONTENT"
+              fi
+              sleep 5
+            done
+          ) &
+          MONITOR_PID=$!
+
+          # 执行主编译
           export LOCALVERSION=""
-          # 此时劫持脚本的输出会插播在编译日志中间
           yes "" | ./build_kernel_GKI.sh pa3q_chn_openx user sun
+          
+          # 结束后清理
+          kill $MONITOR_PID || true
 
       - name: 🛠️ 合成 DTBO 并集成 AnyKernel3
         if: success()
         run: |
           mkdir -p dtbo_work
-          echo "🔍 正在去重并提取 .dtbo..."
-          
-          declare -A seen_hashes
+          # 提取唯一 DTBO (同时查找 out 和 drivers)
           find out drivers -name "*.dtbo" -type f 2>/dev/null | while read -r dtbo_file; do
               hash=$(md5sum "$dtbo_file" | awk '{print $1}')
-              if [[ -z "${seen_hashes[$hash]}" ]]; then
-                  seen_hashes[$hash]=1
-                  cp "$dtbo_file" "dtbo_work/${hash}.dtbo"
-                  echo "  + 提取唯一 DTBO: $(basename "$dtbo_file")"
-              fi
+              [ -z "${seen_hashes[$hash]}" ] && seen_hashes[$hash]=1 && cp "$dtbo_file" "dtbo_work/${hash}.dtbo"
           done
 
-          MKDTBOIMG="./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg"
-          if [ -f "$MKDTBOIMG" ]; then
-              chmod +x "$MKDTBOIMG"
-              "$MKDTBOIMG" create dtbo.img dtbo_work/*.dtbo
-              echo "✅ dtbo.img 合成成功！"
-          fi
-
+          ./kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/mkdtboimg create dtbo.img dtbo_work/*.dtbo
+          
           git clone --depth=1 https://github.com/fei-ke/AnyKernel3.git -b s25
-          echo "📦 正在集成产物..."
           find kernel_platform/bazel-cache -name "Image" -type f | grep "sun_perf" | head -n 1 | xargs -I {} cp {} AnyKernel3/
           [ -f "dtbo.img" ] && cp dtbo.img AnyKernel3/
           
@@ -72,20 +74,20 @@ jobs:
       - name: 📂 收集原始产物
         if: always()
         run: |
-          # 停止后台脚本
-          [ ! -z "$HIJACK_PID" ] && sudo kill $HIJACK_PID || true
-          
           mkdir -p raw_folders
           [ -d "out" ] && cp -r out raw_folders/
           [ -d "drivers" ] && cp -r drivers raw_folders/
           find kernel_platform/bazel-cache -name "Image" -type f | grep "sun_perf" | head -n 1 | xargs -I {} cp {} raw_folders/
-          [ -f "dtbo.img" ] && cp dtbo.img raw_folders/
+          cp dtbo.img hijack.log raw_folders/ 2>/dev/null || true
+          
+          echo "🎯 最终劫持记录检查："
+          cat hijack.log
 
       - name: 📤 上传产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S25U-Final-Artifacts
+          name: S25U-Full-Artifacts
           path: |
             S25U-SukiSU-Kernel-Flashable.zip
             raw_folders/
